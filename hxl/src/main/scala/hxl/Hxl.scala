@@ -18,7 +18,6 @@ package hxl
 
 import cats._
 import cats.implicits._
-import cats.arrow.FunctionK
 
 /*
  * Hxl is a value that that represents a computation that may be batched.
@@ -71,7 +70,7 @@ object Hxl {
   }
 
   def runSequential[F[_]: Monad, A](node: Hxl[F, A]): F[A] = {
-    implicit val ev = Parallel.identity[F]
+    implicit val ev: Parallel[F] = Parallel.identity[F]
     runPar[F, A](node)
   }
 
@@ -93,10 +92,12 @@ object Hxl {
     new Parallel[G] {
       type F[A] = Hxl[P.F, A]
 
-      override def sequential: F ~> G =
-        FunctionK.liftFunction(fa => fa.mapK(P.sequential)(P.monad))
-      override def parallel: G ~> F =
-        FunctionK.liftFunction(fa => fa.mapK(P.parallel)(P.applicative))
+      override def sequential: F ~> G = new (F ~> G) {
+        def apply[A](fa: F[A]): G[A] = fa.mapK(P.sequential)(P.monad)
+      }
+      override def parallel: G ~> F = new (G ~> F) {
+        def apply[A](fa: G[A]): F[A] = fa.mapK(P.parallel)(P.applicative)
+      }
 
       override def applicative: Applicative[F] = applicativeForHxl[P.F](P.applicative)
 

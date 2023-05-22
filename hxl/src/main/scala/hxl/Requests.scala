@@ -66,9 +66,9 @@ object Requests {
 
   def read[F[_], A](req: Requests[F, A], state: DSMap): Eval[A] = Eval.defer {
     req match {
-      case Pure(a)          => Eval.now(a)
-      case ap: Ap[F, a, b]  => (read(ap.left, state), read(ap.right, state)).mapN(_(_))
-      case l: Lift[F, k, a] => Eval.now(state.get(l.source.key, l.key))
+      case Pure(a)                     => Eval.now(a)
+      case ap: Ap[F, a, b]             => (read(ap.left, state), read(ap.right, state)).mapN(_(_))
+      case l: Lift[F, k, a] @unchecked => Eval.now(state.get(l.source.key, l.key))
     }
   }
 
@@ -84,8 +84,8 @@ object Requests {
     val m2: F[List[(DSKey[_, _], KeyedData[_, _])]] = m.toList.parTraverse { case (ds: Key[k, v], keys) =>
       type K = k
       val nest: F[Map[ds.ds.K2, v]] = keys.toList.toNel match {
-        case None                                 => F.pure(Map.empty[ds.ds.K2, v])
         case Some(k2: NonEmptyList[K] @unchecked) => ds.ds.batch(k2)
+        case _                                    => F.pure(Map.empty[ds.ds.K2, v])
       }
 
       nest.map { m =>
