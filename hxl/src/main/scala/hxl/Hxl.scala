@@ -1,0 +1,3 @@
+package hxl
+
+trait Hxl
