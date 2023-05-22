@@ -13,11 +13,15 @@ ThisBuild / developers := List(
   Developer("valdemargr", "Valdemar Grange", "randomvald0069@gmail.com", url("https://github.com/valdemargr"))
 )
 
-lazy val root = project.in(file("hxl"))
-  .settings(
-    libraryDependencies ++= Seq(
-      "org.typelevel" %% "cats-core" % "2.9.0",
-      "org.scalameta" %% "munit" % "1.0.0-M6" % Test,
-      "org.typelevel" %% "munit-cats-effect" % "2.0.0-M3" % Test,
-    )
+lazy val sharedSettings = Seq(
+  libraryDependencies ++= Seq(
+    "org.typelevel" %% "cats-core" % "2.9.0",
+    "org.scalameta" %% "munit" % "1.0.0-M6" % Test,
+    "org.typelevel" %% "munit-cats-effect" % "2.0.0-M3" % Test
   )
+)
+
+lazy val root = project
+  .in(file("hxl"))
+  .settings(sharedSettings)
+  .settings(name := "hxl")
