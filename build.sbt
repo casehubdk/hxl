@@ -7,6 +7,7 @@ ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
 
 ThisBuild / tlBaseVersion := "0.1"
+ThisBuild / tlSonatypeUseLegacyHost := false
 
 ThisBuild / licenses := List("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0"))
 ThisBuild / developers := List(
