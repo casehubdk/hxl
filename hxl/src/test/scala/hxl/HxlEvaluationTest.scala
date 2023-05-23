@@ -62,7 +62,7 @@ class HxlEvaluationTest extends FunSuite {
 
   case object StatefulKey extends DSKey[String, String]
   def statefulDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(StatefulKey) { ks =>
-    StateT { i: Int =>
+    StateT { (i: Int) =>
       F.pure {
         (i + ks.size, ks.toList.map(s => s -> s).toMap)
       }
