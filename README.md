@@ -2,7 +2,7 @@
 Hxl is a pure applicative batching library for Scala.
 
 Hxl is based on the ideas presented in [Haxl](https://simonmar.github.io/bib/papers/haxl-icfp14.pdf), but diverges in in a few ways.
-Notably, hxl does not use side effects, but is instead based on free applicatives.
+Notably, Hxl does not perform side effects, but is instead based on a free applicative structure.
 
 Hxl is very small (only a couple hundred lines of code) and only depends on cats.
 
@@ -15,7 +15,7 @@ libraryDependencies += "com.github.casehubdk" %% "hxl" % "0.1.0"
 ```
 
 ## Usage
-There are two primitive structures in hxl: `DataSource[F, K, V]` and `DSKey[K, V]`.
+There are two primitive structures in Hxl: `DataSource[F, K, V]` and `DSKey[K, V]`.
 A `DataSource[F, K, V]` abstracts over a function `NonEmptyList[K] => F[Map[K, V]]`.
 A `DataSource` is uniquely (as in Scala universal equals) identified by its `DSKey`.
 ```scala
@@ -36,12 +36,12 @@ def dataSource[F[_]: Applicative] = DataSource.from[F, MyDSKey, String](MyDSKey)
 
 val fa: Hxl[Id, Option[String]] = Hxl(MyDSKey("foo"), dataSource[Id])
 val fb: Hxl[Id, Option[String]] = Hxl(MyDSKey("baz"), dataSource[Id])
-(fa, fb).mapN(_.mkString + " " + _.mkString) // "bar qux"
+Hxl.runSequential((fa, fb).mapN(_.mkString + " " + _.mkString)) // "bar qux"
 ```
 
-Hxl is an applicative, but sometimes you need a monad.
+Hxl forms an applicative, but sometimes you need a monad.
 Hxl is like `Validated` from `cats`, in that it can escape it's applicative nature via a method `andThen`.
-However, if you need Hxl to become a monad (like `Either` to `Validated`), you can use request a monadic view of your effect:
+However, if you need Hxl to become a monad (like `Either` is to `Validated`), you can use request a monadic view of your effect:
 ```scala
 val fa: Hxl[F, String] = ???
 
@@ -77,4 +77,59 @@ def dataSource: DataSource[Effect, MyDSKey, String] = DataSource.from(MyDSKey) {
     (cache ++ fetched.map{ case (k, v) => k.id -> v }, hits.toMap ++ fetched)
   }
 }
+```
+
+## Extending Hxl
+Hxl's interface is public and small, so extension is very possible.
+As an example, let's add tracing (from `natchez`) to Hxl:
+```scala
+import natchez._
+import cats._
+import cats.data._
+import cats.implicits._
+
+def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = req match {
+  case Requests.Pure(value)     => Requests.Pure(value)
+  case ap: Requests.Ap[F, a, b] => Requests.Ap(traceRequests(ap.left), traceRequests(ap.right))
+  case lift: Requests.Lift[F, k, a] =>
+    val newSource = DataSource.full[F, k, lift.source.K2, a](lift.source.key)(lift.source.getKey) { ks =>
+      Trace[F].span(s"datasource.${lift.source.key}") {
+        Trace[F].put("keys" -> ks.size.toString) *> lift.source.batch(ks)
+      }
+    }
+
+    Requests.Lift(newSource, lift.key)
+}
+
+def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](
+    runner: Hxl[F, *] ~> Hxl.Target[F, G, *]
+): Hxl[F, *] ~> Hxl.Target[F, StateT[G, Int, *], *] = {
+  type Effect[A] = StateT[G, Int, A]
+  new (Hxl[F, *] ~> Hxl.Target[F, Effect, *]) {
+    def apply[A](fa: Hxl[F, A]): Hxl.Target[F, Effect, A] =
+      fa match {
+        case Hxl.LiftF(unFetch) =>
+          StateT.liftF {
+            Trace[G].span("hxl.fetch") {
+              runner(Hxl.LiftF(unFetch))
+            }
+          }
+        case bind: Hxl.Bind[F, a, b] =>
+          StateT { round: Int =>
+            Trace[G]
+              .span("hxl.bind") {
+                Trace[G].put("round" -> round.toString) *> runner {
+                  Hxl.Bind(traceRequests(bind.requests), bind.f)
+                }
+              }
+              .map(round + 1 -> _)
+          }
+        case other => StateT.liftF(runner(other))
+      }
+  }
+}
+
+def fa: Hxl[F, String] = ???
+
+val result: F[String] = fa.foldMap(composeTracing[F, F](Hxl.parallelRunner)).runA(0)
 ```

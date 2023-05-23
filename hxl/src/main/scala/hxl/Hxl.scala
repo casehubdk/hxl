@@ -35,9 +35,14 @@ sealed trait Hxl[F[_], A] {
   // Provides a monadic interface for Hxl.
   // Useful for combinators such as `flatTraverse`
   def monadic: HxlM[F, A] = HxlM(this)
+
+  def foldMap[G[_]](fk: Hxl[F, *] ~> Hxl.Target[F, G, *])(implicit G: Monad[G]): G[A] =
+    G.tailRecM(this)(fk.apply)
 }
 
 object Hxl {
+  type Target[F[_], G[_], A] = G[Either[Hxl[F, A], A]]
+
   // Almost a free monad
   final case class Done[F[_], A](value: A) extends Hxl[F, A] {
     def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] = f(value)
@@ -59,19 +64,27 @@ object Hxl {
       LiftF(fk(unFetch).map(_.mapK(fk)))
   }
 
-  def runPar[F[_]: Parallel, A](node: Hxl[F, A])(implicit F: Monad[F]): F[A] = node match {
-    case Done(a)   => F.pure(a)
-    case LiftF(fa) => fa.flatMap(runPar(_))
-    case alg: Bind[F, a, b] =>
-      Requests
-        .run[F, a](alg.requests)
-        .map(alg.f)
-        .flatMap(runPar[F, b])
+  def parallelRunner[F[_]](implicit F: Parallel[F]): Hxl[F, *] ~> Target[F, F, *] = new (Hxl[F, *] ~> Target[F, F, *]) {
+    implicit val M: Monad[F] = F.monad
+    override def apply[A](fa: Hxl[F, A]): F[Either[Hxl[F, A], A]] =
+      fa match {
+        case Done(a)        => M.pure(Right(a))
+        case LiftF(unFetch) => unFetch.map(Left(_))
+        case bind: Bind[F, a, b] =>
+          Requests
+            .run[F, a](bind.requests)
+            .map(bind.f)
+            .map(_.asLeft)
+      }
   }
 
+  def runPar[F[_]: Parallel, A](node: Hxl[F, A])(implicit F: Monad[F]): F[A] =
+    node.foldMap(parallelRunner[F])
+
   def runSequential[F[_]: Monad, A](node: Hxl[F, A]): F[A] = {
-    implicit val ev: Parallel[F] = Parallel.identity[F]
-    runPar[F, A](node)
+    cats.data.StateT
+    implicit val P: Parallel[F] = Parallel.identity[F]
+    runPar(node)
   }
 
   def embedF[F[_], A](fa: F[Hxl[F, A]]): Hxl[F, A] = LiftF(fa)
