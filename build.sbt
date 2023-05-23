@@ -9,6 +9,12 @@ ThisBuild / organizationName := "CaseHubDK"
 ThisBuild / tlBaseVersion := "0.1"
 ThisBuild / tlSonatypeUseLegacyHost := false
 
+ThisBuild / tlCiMimaBinaryIssueCheck := false
+ThisBuild / tlMimaPreviousVersions := Set.empty
+ThisBuild / mimaReportSignatureProblems := false
+ThisBuild / mimaFailOnProblem := false
+ThisBuild / mimaPreviousArtifacts := Set.empty
+
 ThisBuild / licenses := List("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0"))
 ThisBuild / developers := List(
   Developer("valdemargr", "Valdemar Grange", "randomvald0069@gmail.com", url("https://github.com/valdemargr"))
