@@ -28,7 +28,12 @@ lazy val sharedSettings = Seq(
   )
 )
 
-lazy val root = project
+lazy val core = project
   .in(file("hxl"))
+  .settings(sharedSettings)
+  .settings(name := "hxl")
+
+lazy val natchez = project
+  .in(file("natchez"))
   .settings(sharedSettings)
   .settings(name := "hxl")

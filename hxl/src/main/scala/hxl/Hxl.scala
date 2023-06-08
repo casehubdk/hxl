@@ -36,12 +36,14 @@ sealed trait Hxl[F[_], A] {
   // Useful for combinators such as `flatTraverse`
   def monadic: HxlM[F, A] = HxlM(this)
 
-  def foldMap[G[_]](fk: Hxl[F, *] ~> Hxl.Target[F, G, *])(implicit G: Monad[G]): G[A] =
-    G.tailRecM(this)(fk.apply)
+  def foldMap[G[_]](fk: Hxl.Compiler[F, G])(implicit G: Monad[G]): G[A] =
+    this.tailRecM(fk(_))
 }
 
 object Hxl {
   type Target[F[_], G[_], A] = G[Either[Hxl[F, A], A]]
+
+  type Compiler[F[_], G[_]] = Hxl[F, *] ~> Target[F, G, *]
 
   // Almost a free monad
   final case class Done[F[_], A](value: A) extends Hxl[F, A] {
@@ -64,7 +66,7 @@ object Hxl {
       LiftF(fk(unFetch).map(_.mapK(fk)))
   }
 
-  def parallelRunner[F[_]](implicit F: Parallel[F]): Hxl[F, *] ~> Target[F, F, *] = new (Hxl[F, *] ~> Target[F, F, *]) {
+  def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
     implicit val M: Monad[F] = F.monad
     override def apply[A](fa: Hxl[F, A]): F[Either[Hxl[F, A], A]] =
       fa match {
@@ -82,7 +84,6 @@ object Hxl {
     node.foldMap(parallelRunner[F])
 
   def runSequential[F[_]: Monad, A](node: Hxl[F, A]): F[A] = {
-    cats.data.StateT
     implicit val P: Parallel[F] = Parallel.identity[F]
     runPar(node)
   }

@@ -81,6 +81,21 @@ def dataSource: DataSource[Effect, MyDSKey, String] = DataSource.from(MyDSKey) {
 
 ## Extending Hxl
 Hxl's interface is public and small, so extension is very possible.
+
+Under the hood, Hxl compiles your structure into `F[A]` via a natural transformation:
+```scala
+type Target[F[_], G[_], A] = G[Either[Hxl[F, A], A]]
+
+type Compiler[F[_], G[_]] = Hxl[F, *] ~> Target[F, G, *]
+```
+Hxl repeats your natural transformation until the result becomes `Right`, like `tailRecM`.
+```scala
+def fa: Hxl[F, A] = ???
+
+fa.foldMap(Hxl.parallelRunner[F]): F[A]
+```
+`Compiler`s can be composed like ordinary functions such that the core of Hxl is exposed for extension.
+
 As an example, let's add tracing (from `natchez`) to Hxl:
 ```scala
 import natchez._
@@ -102,10 +117,10 @@ def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F,
 }
 
 def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](
-    runner: Hxl[F, *] ~> Hxl.Target[F, G, *]
-): Hxl[F, *] ~> Hxl.Target[F, StateT[G, Int, *], *] = {
+    compiler: Compiler[F, G]
+): Compiler[F, State[G, Int, *]] = {
   type Effect[A] = StateT[G, Int, A]
-  new (Hxl[F, *] ~> Hxl.Target[F, Effect, *]) {
+  new Compiler[F, Effect] {
     def apply[A](fa: Hxl[F, A]): Hxl.Target[F, Effect, A] =
       fa match {
         case Hxl.LiftF(unFetch) =>
