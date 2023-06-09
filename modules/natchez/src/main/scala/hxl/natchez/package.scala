@@ -26,7 +26,7 @@ package object `natchez` {
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = req match {
     case Requests.Pure(value)     => Requests.Pure(value)
     case ap: Requests.Ap[F, a, b] => Requests.Ap(traceRequests(ap.left), traceRequests(ap.right))
-    case lift: Requests.Lift[F, k, a] =>
+    case lift: Requests.Lift[F, k, a] @unchecked /*scala 3 reports this as erasure :(*/ =>
       val newSource = DataSource.full[F, k, lift.source.K2, a](lift.source.key)(lift.source.getKey) { ks =>
         Trace[F].span(s"datasource.${lift.source.key}") {
           Trace[F].put("keys" -> ks.size.toString) *> lift.source.batch(ks)
@@ -50,7 +50,7 @@ package object `natchez` {
               }
             }
           case bind: Hxl.Bind[F, a, b] =>
-            StateT { round: Int =>
+            StateT { (round: Int) =>
               Trace[G]
                 .span("hxl.bind") {
                   Trace[G].put("round" -> round) *> compiler {
