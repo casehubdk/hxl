@@ -41,7 +41,13 @@ class TracingTest extends CatsEffectSuite {
       ep
         .root("test-root")
         .useKleisli(TracedRunner.runSequential(fc)) >> ep.ref.get.map { data =>
-        fail(data.map(_.toString()).mkString_("\n")): Unit
+        _root_.natchez.TraceValue
+        val x = data.foldMap {
+          case ((_, InMemory.NatchezCommand.Put(List(("round", TraceValue.NumberValue(n)))))) =>
+            n.intValue()
+          case _ => 0
+        }
+        assertEquals(x, 3)
       }
     }
   }

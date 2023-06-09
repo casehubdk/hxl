@@ -53,7 +53,7 @@ package object `natchez` {
             StateT { round: Int =>
               Trace[G]
                 .span("hxl.bind") {
-                  Trace[G].put("round" -> round.toString) *> compiler {
+                  Trace[G].put("round" -> round) *> compiler {
                     Hxl.Bind(traceRequests(bind.requests), bind.f)
                   }
                 }
