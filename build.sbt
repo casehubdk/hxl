@@ -2,7 +2,7 @@ val scala213Version = "2.13.10"
 val scala32Version = "3.2.2"
 
 ThisBuild / scalaVersion := scala213Version
-ThisBuild / crossScalaVersions := Seq(scala213Version, scala32Version)
+ThisBuild / crossScalaVersions := Seq(scala213Version, scala32Version, "3.3.0")
 ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
 
@@ -28,7 +28,20 @@ lazy val sharedSettings = Seq(
   )
 )
 
-lazy val root = project
-  .in(file("hxl"))
+lazy val core = project
+  .in(file("modules/core"))
   .settings(sharedSettings)
   .settings(name := "hxl")
+
+lazy val natchez = project
+  .in(file("modules/natchez"))
+  .dependsOn(core)
+  .settings(sharedSettings)
+  .settings(
+    libraryDependencies ++= Seq(
+      "org.tpolecat" %% "natchez-core" % "0.3.2",
+      "org.tpolecat" %% "natchez-noop" % "0.3.2" % Test,
+      "org.tpolecat" %% "natchez-testkit" % "0.3.2" % Test
+    )
+  )
+  .settings(name := "hxl-natchez")
