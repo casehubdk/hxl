@@ -118,7 +118,7 @@ def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F,
 
 def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](
     compiler: Compiler[F, G]
-): Compiler[F, State[G, Int, *]] = {
+): Compiler[F, StateT[G, Int, *]] = {
   type Effect[A] = StateT[G, Int, A]
   new Compiler[F, Effect] {
     def apply[A](fa: Hxl[F, A]): Hxl.Target[F, Effect, A] =
@@ -126,20 +126,20 @@ def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](
         case Hxl.LiftF(unFetch) =>
           StateT.liftF {
             Trace[G].span("hxl.fetch") {
-              runner(Hxl.LiftF(unFetch))
+              compiler(Hxl.LiftF(unFetch))
             }
           }
         case bind: Hxl.Bind[F, a, b] =>
           StateT { round: Int =>
             Trace[G]
               .span("hxl.bind") {
-                Trace[G].put("round" -> round.toString) *> runner {
+                Trace[G].put("round" -> round.toString) *> compiler {
                   Hxl.Bind(traceRequests(bind.requests), bind.f)
                 }
               }
               .map(round + 1 -> _)
           }
-        case other => StateT.liftF(runner(other))
+        case other => StateT.liftF(compiler(other))
       }
   }
 }
