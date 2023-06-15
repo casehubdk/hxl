@@ -1,4 +1,4 @@
-# Hxl
+# Hxl <a href="https://typelevel.org/cats/"><img src="https://typelevel.org/cats/img/cats-badge.svg" height="40px" align="right" alt="Cats friendly" /></a>
 Hxl is a pure applicative batching library for Scala.
 
 Hxl is based on the ideas presented in [Haxl](https://simonmar.github.io/bib/papers/haxl-icfp14.pdf), but diverges in in a few ways.
