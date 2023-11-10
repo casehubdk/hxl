@@ -191,10 +191,6 @@ object instances {
   /** A parallel instance for Hxl a bit of a footgun since (P: Parallel[F, Hxl]).monad: Monad[Hxl[F, *]], which can have very unfortunate
     * consequences if you're not careful.
     *
-    * If you use any combinator that weaves in and out of the Applicative using Parallel, then you will likely have bugs.
-    *
-    * Compositions that you thought were batched can suddenly become sequential, please be careful.
-    *
     * import hxl.instances.parallel._
     */
   object parallel {
