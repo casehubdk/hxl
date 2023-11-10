@@ -17,12 +17,13 @@
 package hxl
 
 import cats._
+import cats.arrow._
 import cats.implicits._
 
 /*
  * Hxl is a value that that represents a computation that may be batched.
  * Hxl forms an applicative, and only an applicative.
- * `andThen` exists as an alternative to `flatMap` (since that wouldn't be lawful), much like `Validated`.
+ * `andThen` exists as an alternative to `flatMap`, much like `Validated`.
  */
 sealed trait Hxl[F[_], A] {
   def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B]
@@ -88,6 +89,8 @@ object Hxl {
     runPar(node)
   }
 
+  def unit[F[_]]: Hxl[F, Unit] = Done(())
+
   def embedF[F[_], A](fa: F[Hxl[F, A]]): Hxl[F, A] = LiftF(fa)
 
   def liftF[F[_]: Functor, A](fa: F[A]): Hxl[F, A] = embedF(fa.map(Done(_)))
@@ -101,38 +104,19 @@ object Hxl {
     apply[F, K, V](k, source)
       .flatMapF(F.fromOption(_, new RuntimeException(show"Key $k not found")))
 
-  implicit def parallelForHxl[F[_]](implicit P: Parallel[F]): Parallel[Hxl[F, *]] = {
-    type G[A] = Hxl[F, A]
-    new Parallel[G] {
-      type F[A] = Hxl[P.F, A]
-
-      override def sequential: F ~> G = new (F ~> G) {
-        def apply[A](fa: F[A]): G[A] = fa.mapK(P.sequential)(P.monad)
-      }
-      override def parallel: G ~> F = new (G ~> F) {
-        def apply[A](fa: G[A]): F[A] = fa.mapK(P.parallel)(P.applicative)
-      }
-
-      override def applicative: Applicative[F] = applicativeForHxl[P.F](P.applicative)
-
-      override def monad: Monad[G] = {
-        implicit val m = P.monad
-        new Monad[G] {
-          override def flatMap[A, B](fa: G[A])(f: A => G[B]): G[B] = fa.monadic.flatMap(f(_).monadic).hxl
-          override def tailRecM[A, B](a: A)(f: A => G[Either[A, B]]): G[B] = a.tailRecM(f(_).monadic).hxl
-          override def pure[A](x: A): G[A] = Done(x)
-        }
-      }
-    }
-  }
-
-  implicit def applicativeForHxl[F[_]: Applicative]: Applicative[Hxl[F, *]] = {
-    type G[A] = Hxl[F, A]
-    new Applicative[G] {
-      def pure[A](x: A): G[A] = Done(x)
-      def ap[A, B](ff: G[A => B])(fa: G[A]): G[B] =
+  // Almost the same signature as parallel, except we don't have a monad, but a functor instead
+  // This is because of the free monad structure of Hxl, we can defer Monad evidence until we need to run
+  def applicativeInstance[F[_]: Functor, G[_]: Applicative](
+      fg: F ~> G,
+      gf: G ~> F
+  ): Applicative[Hxl[F, *]] = {
+    implicit def self: Applicative[Hxl[F, *]] = applicativeInstance[F, G](fg, gf)
+    type H[A] = Hxl[F, A]
+    new Applicative[H] {
+      def pure[A](x: A): H[A] = Done(x)
+      def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] =
         (ff, fa) match {
-          case (LiftF(fa), LiftF(fb)) => LiftF((fa, fb).mapN(_ <*> _))
+          case (LiftF(fa), LiftF(fb)) => LiftF(gf((fg(fa), fg(fb)).mapN(_ <*> _)))
           case (LiftF(fa), h)         => LiftF(fa.map(_ <*> h))
           case (h, LiftF(fa))         => LiftF(fa.map(h <*> _))
           case (Done(f), Done(a))     => Done(f(a))
@@ -144,20 +128,34 @@ object Hxl {
         }
     }
   }
+
+  implicit def applicativeForHxl[F[_]: Applicative]: Applicative[Hxl[F, *]] =
+    applicativeInstance[F, F](FunctionK.id[F], FunctionK.id[F])
 }
 
 /*
  * A monadic view of Hxl.
  * The equivalent counterpart for `Hxl` as `Either` is to `Validated`.
- * Is effectively the identity monad transformer.
  */
 final case class HxlM[F[_], A](hxl: Hxl[F, A]) {
   def mapK[G[_]: Functor](fk: F ~> G): HxlM[G, A] = HxlM(hxl.mapK(fk))
 
   def flatMapF[B](f: A => F[B])(implicit F: Functor[F]): HxlM[F, B] = HxlM(hxl.flatMapF(f))
+
+  def foldMap[G[_]](fk: Hxl.Compiler[F, G])(implicit G: Monad[G]): G[A] = hxl.foldMap(fk)
+
+  def applicative: Hxl[F, A] = hxl
 }
 
 object HxlM {
+  def monadicK[F[_]]: Hxl[F, *] ~> HxlM[F, *] = new (Hxl[F, *] ~> HxlM[F, *]) {
+    def apply[A](fa: Hxl[F, A]): HxlM[F, A] = fa.monadic
+  }
+
+  def applicativeK[F[_]]: HxlM[F, *] ~> Hxl[F, *] = new (HxlM[F, *] ~> Hxl[F, *]) {
+    def apply[A](fa: HxlM[F, A]): Hxl[F, A] = fa.applicative
+  }
+
   // Monad for HxlM
   // HxlM can implement any covariant typeclass (but not contravariant ones since `F ~> HxlM` but not `HxlM ~> F`).
   implicit def monadForHxlM[F[_]: Monad]: Monad[HxlM[F, *]] = {
@@ -174,9 +172,45 @@ object HxlM {
         }
     }
   }
+}
+
+object instances {
+
+  /** A parallel instance for Hxl a bit of a footgun since (P: Parallel[F, Hxl]).monad: Monad[Hxl[F, *]], which can have very unfortunate
+    * consequences if you're not careful.
+    *
+    * If you use any combinator that weaves in and out of the Applicative using Parallel, then you will likely have bugs.
+    *
+    * Compositions that you thought were batched can suddenly become sequential, please be careful.
+    *
+    * import hxl.instances.parallel._
+    */
+  object parallel {
+    def parallelForHxl[F[_]](implicit P: Parallel[F]): Parallel[Hxl[F, *]] = {
+      implicit def m: Monad[F] = P.monad
+      implicit def a: Applicative[P.F] = P.applicative
+      type F0[A] = F[A]
+      new Parallel[Hxl[F, *]] {
+        type F[A] = Hxl[F0, A]
+        override def sequential: F ~> F = FunctionK.id[F]
+        override def parallel: F ~> F = FunctionK.id[F]
+        override def applicative: Applicative[F] = Hxl.applicativeInstance[F0, P.F](P.parallel, P.sequential)
+        override def monad: Monad[Hxl[F0, *]] = {
+          implicit val m = P.monad
+          new Monad[Hxl[F0, *]] {
+            override def flatMap[A, B](fa: Hxl[F0, A])(f: A => Hxl[F0, B]): Hxl[F0, B] =
+              fa.andThen(f)
+            override def tailRecM[A, B](a: A)(f: A => Hxl[F0, Either[A, B]]): Hxl[F0, B] =
+              a.tailRecM(f(_).monadic).hxl
+            override def pure[A](x: A): Hxl[F0, A] = Hxl.Done(x)
+          }
+        }
+      }
+    }
+  }
 
   /*
-   * A parallel instance for HxlM is dangerously ambiguous.
+   * A parallel instance for HxlM is ambiguous.
    * Consider the difference between parallel composition of the Batch axis and the lifted effect axis
    * Which one of the following do you want:
    *   Hxl[F, A] | F[A]
@@ -187,15 +221,29 @@ object HxlM {
    *
    * With Hxl (applicative) then the Hxl axis is Batch, and ap / parAp controls the effect axis
    * With HxlM (monad) then the Hxl axis is Seq and the effect axis is ambigious
-   * If you need a parallel instance for Hxl consider implementing one ad-hoc, here is an example:
-   * ```scala
-   * implicit def parallelForHxlM[G[_]: Monad]: Parallel[HxlM[G, *]] = new Parallel[HxlM[G, *]] {
-   *   type F[A] = Hxl[G, A]
-   *   override def sequential: F ~> HxlM[G, *] = FunctionK.liftFunction(HxlM(_))
-   *   override def parallel: HxlM[G, *] ~> F = FunctionK.liftFunction(_.hxl)
-   *   override def applicative: Applicative[F] = Hxl.applicativeForHxl[G]
-   *   override def monad: Monad[HxlM[G, *]] = monadForHxlM[G]
-   * }
-   * ```
+   * Pick one by importing the appropriate instance:
+   *  import hxl.instances.hxlm.parallel._
+   *  // or
+   *  import hxl.instances.hxlm.sequential._
    */
+  object hxlm {
+    object parallel {
+      implicit def parallelHxlMForParallelEffect[G[_]](implicit P: Parallel[G]): Parallel[HxlM[G, *]] = {
+        implicit def applicativePF: Applicative[P.F] = P.applicative
+        implicit def monadF: Monad[G] = P.monad
+        new Parallel[HxlM[G, *]] {
+          type F[A] = Hxl[G, A]
+          override def sequential: F ~> HxlM[G, *] = HxlM.monadicK[G]
+          override def parallel: HxlM[G, *] ~> F = HxlM.applicativeK[G]
+          override def applicative: Applicative[F] = Hxl.applicativeInstance[G, P.F](P.parallel, P.sequential)
+          override def monad: Monad[HxlM[G, *]] = HxlM.monadForHxlM[G]
+        }
+      }
+    }
+
+    object sequential {
+      implicit def parallelHxlMForParallelEffect[G[_]: Monad]: Parallel[HxlM[G, *]] =
+        parallel.parallelHxlMForParallelEffect[G](Parallel.identity[G])
+    }
+  }
 }
