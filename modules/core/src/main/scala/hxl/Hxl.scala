@@ -194,7 +194,7 @@ object instances {
     * import hxl.instances.parallel._
     */
   object parallel {
-    def parallelForHxl[F[_]](implicit P: Parallel[F]): Parallel[Hxl[F, *]] = {
+    implicit def parallelForHxl[F[_]](implicit P: Parallel[F]): Parallel[Hxl[F, *]] = {
       implicit def m: Monad[F] = P.monad
       implicit def a: Applicative[P.F] = P.applicative
       type F0[A] = F[A]
