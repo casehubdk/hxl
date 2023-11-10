@@ -1,4 +1,4 @@
-val scala213Version = "2.13.10"
+val scala213Version = "2.13.12"
 val scala32Version = "3.2.2"
 
 ThisBuild / scalaVersion := scala213Version
@@ -6,7 +6,7 @@ ThisBuild / crossScalaVersions := Seq(scala213Version, scala32Version, "3.3.0")
 ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
 
-ThisBuild / tlBaseVersion := "0.1"
+ThisBuild / tlBaseVersion := "0.2"
 ThisBuild / tlSonatypeUseLegacyHost := false
 
 ThisBuild / tlCiMimaBinaryIssueCheck := false

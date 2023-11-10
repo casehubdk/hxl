@@ -107,6 +107,7 @@ class HxlEvaluationTest extends FunSuite {
       F.raiseError[Map[String, String]](NonEmptyChain.one("error"))
     }
 
+  import hxl.instances.parallel._
   test("parallel composition in runner") {
     type Effect[A] = EitherNec[String, A]
     val fa = Hxl("foo", failingDataSource[Effect]("foo"))
