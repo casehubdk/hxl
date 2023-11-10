@@ -148,6 +148,18 @@ final case class HxlM[F[_], A](hxl: Hxl[F, A]) {
 }
 
 object HxlM {
+  def unit[F[_]]: HxlM[F, Unit] = HxlM(Hxl.unit[F])
+
+  def liftF[F[_]: Functor, A](fa: F[A]): HxlM[F, A] = HxlM(Hxl.liftF(fa))
+
+  def pure[F[_], A](a: A): HxlM[F, A] = HxlM(Hxl.pure(a))
+
+  def apply[F[_], K, V](k: K, source: DataSource[F, K, V]): HxlM[F, Option[V]] =
+    HxlM(Hxl(k, source))
+
+  def force[F[_]: ApplicativeThrow, K: Show, V](k: K, source: DataSource[F, K, V]): HxlM[F, V] =
+    HxlM(Hxl.force(k, source))
+
   def monadicK[F[_]]: Hxl[F, *] ~> HxlM[F, *] = new (Hxl[F, *] ~> HxlM[F, *]) {
     def apply[A](fa: Hxl[F, A]): HxlM[F, A] = fa.monadic
   }
