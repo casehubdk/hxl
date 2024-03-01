@@ -170,7 +170,7 @@ object HxlM {
 
   // Monad for HxlM
   // HxlM can implement any covariant typeclass (but not contravariant ones since `F ~> HxlM` but not `HxlM ~> F`).
-  implicit def monadForHxlM[F[_]: Monad]: Monad[HxlM[F, *]] = {
+  implicit def monadForHxlM[F[_]: Functor]: Monad[HxlM[F, *]] = {
     type G[A] = HxlM[F, A]
     new Monad[G] {
       override def pure[A](x: A): G[A] = HxlM(Hxl.Done(x))
