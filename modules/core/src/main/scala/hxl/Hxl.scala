@@ -81,8 +81,8 @@ object Hxl {
       }
   }
 
-  def runPar[F[_]: Parallel, A](node: Hxl[F, A])(implicit F: Monad[F]): F[A] =
-    node.foldMap(parallelRunner[F])
+  def runPar[F[_]: Parallel, A](node: Hxl[F, A]): F[A] =
+    node.foldMap(parallelRunner[F])(Parallel[F].monad)
 
   def runSequential[F[_]: Monad, A](node: Hxl[F, A]): F[A] = {
     implicit val P: Parallel[F] = Parallel.identity[F]
@@ -222,10 +222,10 @@ object instances {
    * Consider the difference between parallel composition of the Batch axis and the lifted effect axis
    * Which one of the following do you want:
    *   Hxl[F, A] | F[A]
-   *    Batch    | Seq
    *    Batch    | Par
-   *     Seq     | Seq
+   *    Batch    | Seq
    *     Seq     | Par
+   *     Seq     | Seq
    *
    * With Hxl (applicative) then the Hxl axis is Batch, and ap / parAp controls the effect axis
    * With HxlM (monad) then the Hxl axis is Seq and the effect axis is ambigious
