@@ -11,7 +11,7 @@ Hxl is written in tagless final, which allows for molding the library to your ne
 ## Installation
 Hxl is available on Maven Central for Scala 2.13 and 3.2.
 ```scala
-libraryDependencies += "com.github.casehubdk" %% "hxl" % "0.1.1"
+libraryDependencies += "com.github.casehubdk" %% "hxl" % "0.2.3"
 ```
 
 ## Usage
