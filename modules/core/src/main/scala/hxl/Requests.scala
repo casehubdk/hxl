@@ -18,94 +18,99 @@ package hxl
 
 import cats._
 import cats.data._
+import cats.free._
 import cats.implicits._
+import cats.arrow.FunctionK
+import scala.collection.View
 
 /*
  * Requests is the accumulation structure Hxl uses internally to batch requests.
  */
-sealed trait Requests[F[_], A] {
-  def mapK[G[_]](fk: F ~> G): Requests[G, A]
+final case class Requests[F[_], A](
+    discards: View[Requests.Discarded[F, ?]],
+    assocs: FreeApplicative[Requests.Assoc[F, *], A]
+) {
+  import Requests._
+  def mapK[G[_]](fk: F ~> G) = Requests(
+    discards.map(_.mapK(fk)),
+    assocs.compile(new FunctionK[Assoc[F, *], Assoc[G, *]] {
+      def apply[A](fa: Assoc[F, A]): Assoc[G, A] = fa.mapK(fk)
+    })
+  )
 }
 object Requests {
-  final case class Ap[F[_], A, B](
-      left: Requests[F, A => B],
-      right: Requests[F, A]
-  ) extends Requests[F, B] {
-    def mapK[G[_]](fk: F ~> G) = Ap(left.mapK(fk), right.mapK(fk))
-  }
-  final case class Lift[F[_], K, A](
-      source: DataSource[F, K, A],
-      key: K
-  ) extends Requests[F, Option[A]] {
-    def mapK[G[_]](fk: F ~> G) =
-      Lift(source.mapK(fk), key)
-  }
-  final case class Pure[F[_], A](value: A) extends Requests[F, A] {
-    def mapK[G[_]](fk: F ~> G) = Pure(value)
+  final case class Discarded[F[_], K](source: DataSource[F, K, ?], key: K) {
+    def mapK[G[_]](fk: F ~> G) = Discarded(source.mapK(fk), key)
   }
 
-  implicit def applicativeForRequests[F[_]]: Applicative[Requests[F, *]] = {
-    type G[A] = Requests[F, A]
-    new Applicative[G] {
-      def pure[A](x: A): G[A] = Pure(x)
-      def ap[A, B](ff: G[A => B])(fa: G[A]): G[B] = Ap(ff, fa)
-    }
+  sealed trait Assoc[F[_], A] {
+    def mapK[G[_]](fk: F ~> G): Assoc[G, A]
+  }
+  final case class AssocImpl[F[_], K, A](source: DataSource[F, K, A], key: K) extends Assoc[F, Option[A]] {
+    def mapK[G[_]](fk: F ~> G) = AssocImpl(source.mapK(fk), key)
   }
 
-  def getKeys[F[_]](req: Requests[F, _]): Eval[Set[Lift[F, _, _]]] = Eval.defer {
-    req match {
-      case Pure(_)          => Eval.now(Set.empty)
-      case Ap(l, r)         => (getKeys(l), getKeys(r)).mapN(_ ++ _)
-      case l: Lift[F, _, _] => Eval.now(Set(l))
-    }
+  implicit def applicativeForBase[F[_]]: Applicative[Requests[F, *]] = new Applicative[Requests[F, *]] {
+    def pure[A](x: A): Requests[F, A] = Requests(View.empty, FreeApplicative.pure(x))
+
+    val FF = FreeApplicative.freeApplicative[Assoc[F, *]]
+    def ap[A, B](ff: Requests[F, A => B])(fa: Requests[F, A]): Requests[F, B] =
+      Requests(ff.discards ++ fa.discards, FF.ap(ff.assocs)(fa.assocs))
   }
 
-  trait DSMap {
-    def get[K, V](key: DSKey[K, V], k: K): Option[V]
+  def lift[F[_], A, B](source: DataSource[F, A, B], key: A): Requests[F, Option[B]] = {
+    val a: Assoc[F, Option[B]] = AssocImpl[F, A, B](source, key)
+    Requests(View.empty, FreeApplicative.lift(a))
   }
 
-  def read[F[_], A](req: Requests[F, A], state: DSMap): Eval[A] = Eval.defer {
-    req match {
-      case Pure(a)                     => Eval.now(a)
-      case ap: Ap[F, a, b]             => (read(ap.left, state), read(ap.right, state)).mapN(_(_))
-      case l: Lift[F, k, a] @unchecked => Eval.now(state.get(l.source.key, l.key))
-    }
-  }
+  def discard[F[_], A](source: DataSource[F, A, ?], key: A): Requests[F, Unit] =
+    Requests(View(Discarded(source, key)), FreeApplicative.pure(()))
 
+  final case class DSKey0(value: Any) extends AnyRef
+  final case class ValueKey(value: Any) extends AnyRef
+  final case class Value(value: Any) extends AnyRef
+  final case class T2(result: Map[Any, Any]) extends AnyVal
   def run[F[_]: Parallel, A](requests: Requests[F, A])(implicit
       F: Applicative[F]
   ): F[A] = {
-    val keys = getKeys[F](requests).value
-    final case class Key[K0, V0](key: DSKey[K0, V0])(val ds: DataSource[F, K0, V0])
-    trait KeyedData[K, V] {
-      def get(k: K): Option[V]
-    }
-    val m = keys.groupMap { case (x: Lift[F, k, v]) => Key(x.source.key)(x.source) }(_.key)
-    val m2: F[List[(DSKey[_, _], KeyedData[_, _])]] = m.toList.parTraverse { case (ds: Key[k, v], keys) =>
-      type K = k
-      val nest: F[Map[ds.ds.K2, v]] = keys.toList.toNel match {
-        case Some(k2: NonEmptyList[K] @unchecked) => ds.ds.batch(k2)
-        case _                                    => F.pure(Map.empty[ds.ds.K2, v])
+    final case class T(source: DataSource[F, Any, Any], keys: scala.collection.mutable.Set[ValueKey])
+    val xs = scala.collection.mutable.HashMap.empty[DSKey0, T]
+    val c = Const(())
+    requests.assocs.foldMap(new FunctionK[Assoc[F, *], Const[Unit, *]] {
+      def apply[A](fa: Assoc[F, A]): Const[Unit, A] = {
+        val ai = fa.asInstanceOf[AssocImpl[F, A, ?]]
+        val t = xs.getOrElseUpdate(
+          DSKey0(ai.source.key),
+          T(ai.source.asInstanceOf[DataSource[F, Any, Any]], scala.collection.mutable.Set.empty[ValueKey])
+        )
+        t.keys += ValueKey(ai.key)
+        c.retag[A]
       }
+    })
+    requests.discards.foreach { case (d: Discarded[F, a]) =>
+      val t = xs.getOrElseUpdate(
+        DSKey0(d.source.key),
+        T(d.source.asInstanceOf[DataSource[F, Any, Any]], scala.collection.mutable.Set.empty[ValueKey])
+      )
+      t.keys += ValueKey(d.key)
+    }
 
-      nest.map { m =>
-        val kd = new KeyedData[k, v] {
-          def get(k: k): Option[v] = m.get(ds.ds.getKey(k))
+    val ops = xs.iterator.foldLeft(F.pure(View.empty[(DSKey0, T2)])) { case (acc, (_, t)) =>
+      val done =
+        t.keys.view.map(_.value).toList.toNel
+          .traverse(nel => t.source.batch(nel))
+          .map(View.from(_).map(m => (DSKey0(t.source.key), T2(m.asInstanceOf[Map[Any, Any]]))))
+      (acc, done).parMapN((l, r) => l ++ r)
+    }
+
+    ops.map { v =>
+      val m = v.toMap
+      requests.assocs.foldMap[Id](new FunctionK[Assoc[F, *], Id] {
+        def apply[A](fa: Assoc[F, A]): Id[A] = fa match {
+          case ai: AssocImpl[F, k, a] =>
+            m.get(DSKey0(ai.source.key)).flatMap(_.result.get(ai.key)).asInstanceOf[A]
         }
-
-        ds.key -> kd
-      }
+      })
     }
-
-    val dsMap = m2.map { xs =>
-      val m3 = xs.toMap
-
-      new DSMap {
-        def get[K, V](key: DSKey[K, V], k: K): Option[V] =
-          m3.get(key).flatMap { case (m: KeyedData[K, V] @unchecked) => m.get(k) }
-      }
-    }
-
-    dsMap.map(read(requests, _).value)
   }
 }

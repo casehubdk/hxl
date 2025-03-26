@@ -135,4 +135,28 @@ class HxlEvaluationTest extends FunSuite {
     val errs = Hxl.runSequential((fa, fa).tupled).left.toOption.foldMap(_.size)
     assertEquals(errs, 1L)
   }
+
+  test("benchmark nondiscards") {
+    val rng = (0 until 1000).toList
+    def s = rng.traverse(_ => Hxl("foo", simpleDataSource[Id]).void)
+    // warmup
+    (0 until 100).foreach(_ => Hxl.runSequential(s))
+    // report
+    val start = System.currentTimeMillis()
+    Hxl.runSequential(s)
+    val end = System.currentTimeMillis()
+    fail("Benchmark result: " + (end - start) + "ms")
+  }
+
+  test("benchmark discards") {
+    val rng = (0 until 1000).toList
+    def s = rng.traverse(_ => Hxl.discard("foo", simpleDataSource[Id]))
+    // warmup
+    (0 until 100).foreach(_ => Hxl.runSequential(s))
+    // report
+    val start = System.currentTimeMillis()
+    Hxl.runSequential(s)
+    val end = System.currentTimeMillis()
+    fail("Benchmark result: " + (end - start) + "ms")
+  }
 }
