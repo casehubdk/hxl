@@ -97,7 +97,10 @@ object Requests {
 
     val ops = xs.iterator.foldLeft(F.pure(View.empty[(DSKey0, T2)])) { case (acc, (_, t)) =>
       val done =
-        t.keys.view.map(_.value).toList.toNel
+        t.keys.view
+          .map(_.value)
+          .toList
+          .toNel
           .traverse(nel => t.source.batch(nel))
           .map(View.from(_).map(m => (DSKey0(t.source.key), T2(m.asInstanceOf[Map[Any, Any]]))))
       (acc, done).parMapN((l, r) => l ++ r)
