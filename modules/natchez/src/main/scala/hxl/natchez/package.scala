@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 CaseHubDK
+ * Copyright 2025 CaseHubDK
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,19 +21,32 @@ import cats.data._
 import cats.implicits._
 import cats._
 import _root_.hxl.Hxl._
+import cats.arrow.FunctionK
 
 package object `natchez` {
-  def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = req match {
-    case Requests.Pure(value)     => Requests.Pure(value)
-    case ap: Requests.Ap[F, a, b] => Requests.Ap(traceRequests(ap.left), traceRequests(ap.right))
-    case lift: Requests.Lift[F, k, a] @unchecked /*scala 3 reports this as erasure :(*/ =>
-      val newSource = DataSource.full[F, k, lift.source.K2, a](lift.source.key)(lift.source.getKey) { ks =>
-        Trace[F].span(s"datasource.${lift.source.key}") {
-          Trace[F].put("keys" -> ks.size.toString) *> lift.source.batch(ks)
+  def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
+    def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
+      DataSource.full[F, K, source.K2, V](source.key)(source.getKey) { ks =>
+        Trace[F].span(s"datasource.${source.key}") {
+          Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
         }
       }
 
-      Requests.Lift(newSource, lift.key)
+    val discs = req.discards.map { case d: Requests.Discarded[F, a] =>
+      d.copy(
+        source = traceSource(d.source),
+        key = d.key
+      )
+    }
+
+    val aps = req.assocs.compile(new FunctionK[Requests.Assoc[F, *], Requests.Assoc[F, *]] {
+      def apply[A](fa: Requests.Assoc[F, A]): Requests.Assoc[F, A] = fa match {
+        case a: Requests.AssocImpl[F, k, a] =>
+          Requests.AssocImpl(traceSource(a.source), a.key)
+      }
+    })
+
+    Requests(discs, aps)
   }
 
   def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](

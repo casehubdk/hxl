@@ -1,5 +1,5 @@
 /*
- * Copyright 2024 CaseHubDK
+ * Copyright 2025 CaseHubDK
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -110,7 +110,7 @@ object Requests {
       val m = v.toMap
       requests.assocs.foldMap[Id](new FunctionK[Assoc[F, *], Id] {
         def apply[A](fa: Assoc[F, A]): Id[A] = fa match {
-          case ai: AssocImpl[F, k, a] =>
+          case ai: AssocImpl[F, k, a] @unchecked =>
             m.get(DSKey0(ai.source.key)).flatMap(_.result.get(ai.key)).asInstanceOf[A]
         }
       })
