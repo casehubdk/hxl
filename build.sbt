@@ -1,8 +1,6 @@
 val scala213Version = "2.13.12"
-val scala32Version = "3.2.2"
-
 ThisBuild / scalaVersion := scala213Version
-ThisBuild / crossScalaVersions := Seq(scala213Version, scala32Version, "3.3.0")
+ThisBuild / crossScalaVersions := Seq(scala213Version, "3.3.0")
 ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
 
@@ -15,10 +13,13 @@ ThisBuild / mimaReportSignatureProblems := false
 ThisBuild / mimaFailOnProblem := false
 ThisBuild / mimaPreviousArtifacts := Set.empty
 
-ThisBuild / licenses := List("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0"))
+ThisBuild / licenses := Seq(License.Apache2)
 ThisBuild / developers := List(
   Developer("valdemargr", "Valdemar Grange", "randomvald0069@gmail.com", url("https://github.com/valdemargr"))
 )
+ThisBuild / headerLicense := Some(HeaderLicense.Custom("Copyright (c) 2023 CaseHub DK"))
+
+ThisBuild / startYear := Some(2024)
 
 lazy val sharedSettings = Seq(
   libraryDependencies ++= Seq(

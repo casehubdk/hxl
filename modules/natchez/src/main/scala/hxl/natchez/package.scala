@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 CaseHubDK
+ * Copyright 2024 CaseHubDK
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ package object `natchez` {
 
     val aps = req.assocs.compile(new FunctionK[Requests.Assoc[F, *], Requests.Assoc[F, *]] {
       def apply[A](fa: Requests.Assoc[F, A]): Requests.Assoc[F, A] = fa match {
-        case a: Requests.AssocImpl[F, k, a] =>
+        case a: Requests.AssocImpl[F, k, a] @unchecked =>
           Requests.AssocImpl(traceSource(a.source), a.key)
       }
     })

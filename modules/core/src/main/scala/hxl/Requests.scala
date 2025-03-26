@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 CaseHubDK
+ * Copyright 2024 CaseHubDK
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ final case class Requests[F[_], A](
   def mapK[G[_]](fk: F ~> G) = Requests(
     discards.map(_.mapK(fk)),
     assocs.compile(new FunctionK[Assoc[F, *], Assoc[G, *]] {
-      def apply[A](fa: Assoc[F, A]): Assoc[G, A] = fa.mapK(fk)
+      def apply[B](fa: Assoc[F, B]): Assoc[G, B] = fa.mapK(fk)
     })
   )
 }
@@ -77,14 +77,14 @@ object Requests {
     val xs = scala.collection.mutable.HashMap.empty[DSKey0, T]
     val c = Const(())
     requests.assocs.foldMap(new FunctionK[Assoc[F, *], Const[Unit, *]] {
-      def apply[A](fa: Assoc[F, A]): Const[Unit, A] = {
+      def apply[B](fa: Assoc[F, B]): Const[Unit, B] = {
         val ai = fa.asInstanceOf[AssocImpl[F, A, ?]]
         val t = xs.getOrElseUpdate(
           DSKey0(ai.source.key),
           T(ai.source.asInstanceOf[DataSource[F, Any, Any]], scala.collection.mutable.Set.empty[ValueKey])
         )
         t.keys += ValueKey(ai.key)
-        c.retag[A]
+        c.retag[B]
       }
     })
     requests.discards.foreach { case (d: Discarded[F, a]) =>
@@ -109,9 +109,9 @@ object Requests {
     ops.map { v =>
       val m = v.toMap
       requests.assocs.foldMap[Id](new FunctionK[Assoc[F, *], Id] {
-        def apply[A](fa: Assoc[F, A]): Id[A] = fa match {
+        def apply[B](fa: Assoc[F, B]): Id[B] = fa match {
           case ai: AssocImpl[F, k, a] @unchecked =>
-            m.get(DSKey0(ai.source.key)).flatMap(_.result.get(ai.key)).asInstanceOf[A]
+            m.get(DSKey0(ai.source.key)).flatMap(_.result.get(ai.key)).asInstanceOf[B]
         }
       })
     }
