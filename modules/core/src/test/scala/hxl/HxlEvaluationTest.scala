@@ -145,7 +145,7 @@ class HxlEvaluationTest extends FunSuite {
     val start = System.currentTimeMillis()
     Hxl.runSequential(s)
     val end = System.currentTimeMillis()
-    fail("Benchmark result: " + (end - start) + "ms")
+    println("Benchmark result: " + (end - start) + "ms")
   }
 
   test("benchmark discards") {
@@ -157,6 +157,6 @@ class HxlEvaluationTest extends FunSuite {
     val start = System.currentTimeMillis()
     Hxl.runSequential(s)
     val end = System.currentTimeMillis()
-    fail("Benchmark result: " + (end - start) + "ms")
+    println("Benchmark result: " + (end - start) + "ms")
   }
 }
