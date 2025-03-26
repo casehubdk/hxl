@@ -148,3 +148,4 @@ def fa: Hxl[F, String] = ???
 
 val result: F[String] = fa.foldMap(composeTracing[F, F](Hxl.parallelRunner)).runA(0)
 ```
+
