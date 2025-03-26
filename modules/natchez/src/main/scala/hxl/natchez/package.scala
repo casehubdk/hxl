@@ -40,7 +40,7 @@ package object `natchez` {
     }
 
     val aps = req.assocs.compile(new FunctionK[Requests.Assoc[F, *], Requests.Assoc[F, *]] {
-      def apply[A](fa: Requests.Assoc[F, A]): Requests.Assoc[F, A] = fa match {
+      def apply[B](fa: Requests.Assoc[F, B]): Requests.Assoc[F, B] = fa match {
         case a: Requests.AssocImpl[F, k, a] @unchecked =>
           Requests.AssocImpl(traceSource(a.source), a.key)
       }
