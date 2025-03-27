@@ -46,7 +46,7 @@ sealed trait Hxl[F[_], A] {
   // but it allows doing some upfront work now
   //
   // any further composition may destroy the optimized hxl
-  def optimized(implicit F: Monad[F]): F[Hxl[F, A]]
+  def optimized(implicit F: Monad[F]): Either[Hxl[F, A], F[Hxl[F, A]]]
 }
 
 object Hxl {
@@ -58,7 +58,7 @@ object Hxl {
   final case class Done[F[_], A](value: A) extends Hxl[F, A] {
     def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] = f(value)
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Done(value)
-    def optimized(implicit F: Monad[F]): F[Hxl[F, A]] = F.pure(this)
+    def optimized(implicit F: Monad[F]) = Left(this)
   }
   final case class Bind[F[_], A, B](
       requests: Requests[F, A],
@@ -68,14 +68,15 @@ object Hxl {
       Bind(requests, f.andThen(_.andThen(f2)))
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] =
       Bind(requests.mapK(fk), f.andThen(_.mapK(fk)))
-    def optimized(implicit F: Monad[F]): F[Hxl[F, B]] = F.pure(Bind(requests.optimized, f))
+    def optimized(implicit F: Monad[F]) = Left(Bind(requests.optimized, f))
   }
   final case class LiftF[F[_], A](unFetch: F[Hxl[F, A]]) extends Hxl[F, A] {
     def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] =
       LiftF(unFetch.map(_.andThen(f)))
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
       LiftF(fk(unFetch).map(_.mapK(fk)))
-    def optimized(implicit F: Monad[F]): F[Hxl[F, A]] = unFetch.flatMap(_.optimized)
+    def optimized(implicit F: Monad[F]) =
+      unFetch.flatMap(_.optimized.leftMap(F.pure(_)).merge).asRight
   }
 
   def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
