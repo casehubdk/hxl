@@ -20,33 +20,23 @@ import _root_.natchez._
 import cats.data._
 import cats.implicits._
 import cats._
-import _root_.hxl.Hxl._
-import cats.arrow.FunctionK
+import Hxl._
 
 package object `natchez` {
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
-      DataSource.full[F, K, source.K2, V](source.key)(source.getKey) { ks =>
+      DataSource.full[F, K, V](source.key) { ks =>
         Trace[F].span(s"datasource.${source.key}") {
           Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
         }
-      }
+      }(source.optimization)
 
-    val discs = req.discards.map { case d: Requests.Discarded[F, a] =>
-      d.copy(
-        source = traceSource(d.source),
-        key = d.key
-      )
+    req.visit {
+      new Requests.DataSourceVisitor[F] {
+        def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K) =
+          (traceSource(source), k)
+      }
     }
-
-    val aps = req.assocs.compile(new FunctionK[Requests.Assoc[F, *], Requests.Assoc[F, *]] {
-      def apply[B](fa: Requests.Assoc[F, B]): Requests.Assoc[F, B] = fa match {
-        case a: Requests.AssocImpl[F, k, a] @unchecked =>
-          Requests.AssocImpl(traceSource(a.source), a.key)
-      }
-    })
-
-    Requests(discs, aps)
   }
 
   def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](

@@ -98,7 +98,10 @@ object Hxl {
   def pure[F[_], A](a: A): Hxl[F, A] = Done(a)
 
   def apply[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Option[V]] =
-    Bind[F, Option[V], Option[V]](Requests.lift(source, k), Done(_))
+    source.optimization match {
+      case Some(ev) => Bind[F, Unit, Option[V]](Requests.discard(source, k), x => Done(Some(ev(x))))
+      case None     => Bind[F, Option[V], Option[V]](Requests.lift(source, k), Done(_))
+    }
 
   def discard[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Unit] =
     Bind[F, Unit, Unit](Requests.discard(source, k), Done(_))

@@ -37,8 +37,27 @@ final case class Requests[F[_], A](
       def apply[B](fa: Assoc[F, B]): Assoc[G, B] = fa.mapK(fk)
     })
   )
+
+  def visit(visitor: DataSourceVisitor[F]): Requests[F, A] =
+    Requests(
+      discards.map { case d: Discarded[F, a] =>
+        val (source, key) = visitor.visit(d.source, d.key)
+        Discarded[F, a](source, key)
+      },
+      assocs.compile(new FunctionK[Assoc[F, *], Assoc[F, *]] {
+        def apply[B](fa: Assoc[F, B]): Assoc[F, B] = fa match {
+          case a: AssocImpl[F, k, b] @unchecked =>
+            val (source, key) = visitor.visit(a.source, a.key)
+            AssocImpl[F, k, b](source, key)
+        }
+      })
+    )
 }
 object Requests {
+  trait DataSourceVisitor[F[_]] {
+    def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K)
+  }
+
   final case class Discarded[F[_], K](source: DataSource[F, K, ?], key: K) {
     def mapK[G[_]](fk: F ~> G) = Discarded(source.mapK(fk), key)
   }

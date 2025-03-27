@@ -98,22 +98,26 @@ fa.foldMap(Hxl.parallelRunner[F]): F[A]
 
 As an example, let's add tracing (from `natchez`) to Hxl:
 ```scala
-import natchez._
-import cats._
+import _root_.natchez._
 import cats.data._
 import cats.implicits._
+import cats._
+import Hxl._
 
-def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = req match {
-  case Requests.Pure(value)     => Requests.Pure(value)
-  case ap: Requests.Ap[F, a, b] => Requests.Ap(traceRequests(ap.left), traceRequests(ap.right))
-  case lift: Requests.Lift[F, k, a] =>
-    val newSource = DataSource.full[F, k, lift.source.K2, a](lift.source.key)(lift.source.getKey) { ks =>
-      Trace[F].span(s"datasource.${lift.source.key}") {
-        Trace[F].put("keys" -> ks.size.toString) *> lift.source.batch(ks)
-      }
+def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
+def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
+  DataSource.full[F, K, V](source.key) { ks =>
+    Trace[F].span(s"datasource.${source.key}") {
+      Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
     }
+  }(source.optimization)
 
-    Requests.Lift(newSource, lift.key)
+req.visit {
+  new Requests.DataSourceVisitor[F] {
+    def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K) =
+      (traceSource(source), k)
+  }
+}
 }
 
 def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](

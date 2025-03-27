@@ -46,34 +46,32 @@ import cats.implicits._
  * ```
  */
 trait DataSource[F[_], K, V] {
-  type K2
-
-  def getKey(k: K): K2
-
   def key: DSKey[K, V]
 
-  def batch(ks: NonEmptyList[K]): F[Map[K2, V]]
+  // If we don't care about the output, we can optimize the batch since
+  // we don't need to gather the results
+  def optimization: Option[Unit <:< V]
+
+  def batch(ks: NonEmptyList[K]): F[Map[K, V]]
 
   def mapK[G[_]](fk: F ~> G): DataSource[G, K, V] =
-    DataSource.full(key)(getKey)(ks => fk(batch(ks)))
+    DataSource.full(key)(ks => fk(batch(ks)))(optimization)
 }
 
 object DataSource {
-  def full[F[_], K, K2, V](key: DSKey[K, V])(getKey: K => K2)(f: NonEmptyList[K] => F[Map[K2, V]]) = {
-    type K0 = K2
+  def full[F[_], K, V](key: DSKey[K, V])(f: NonEmptyList[K] => F[Map[K, V]])(optimization: Option[Unit <:< V]) = {
     val key0 = key
-    def getKey0(k: K) = getKey(k)
+    val opt = optimization
     new DataSource[F, K, V] {
-      type K2 = K0
-      def getKey(k: K) = getKey0(k)
       def key = key0
+      def optimization: Option[Unit <:< V] = opt
       def batch(ks: NonEmptyList[K]) = f(ks)
     }
   }
 
-  def from[F[_], K, V](key: DSKey[K, V])(f: NonEmptyList[K] => F[Map[K, V]]) =
-    full(key)(identity)(f)
+  def from[F[_], K, V](key: DSKey[K, V])(f: NonEmptyList[K] => F[Map[K, V]]): DataSource[F, K, V] =
+    full(key)(f)(None)
 
   def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: NonEmptyList[K] => F[Unit]): DataSource[F, K, Unit] =
-    DataSource.from(key)(ks => f(ks).as(Map.empty[K, Unit]))
+    DataSource.full(key)(ks => f(ks).as(Map.empty[K, Unit]))(Some(implicitly))
 }
