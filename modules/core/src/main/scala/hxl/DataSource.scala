@@ -38,12 +38,6 @@ import cats.implicits._
  * def dataSource[F[_]: Concurrent](org: String): DataSource[F, ValueKey, String] =
  *   DataSource.from(Key(org)){ ks => ...
  * ```
- *
- * Hxl eliminates duplicate keys by using scala's universal equality.
- * You can supply a custom "getKey" function if your key contains more information than what you'd like to act as "unique".
- * ```scala
- * DataSource.full(key)(x => x.id)(ks => ...)
- * ```
  */
 trait DataSource[F[_], K, V] {
   def key: DSKey[K, V]
