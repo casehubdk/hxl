@@ -105,19 +105,19 @@ import cats._
 import Hxl._
 
 def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
-def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
-  DataSource.full[F, K, V](source.key) { ks =>
-    Trace[F].span(s"datasource.${source.key}") {
-      Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
-    }
-  }(source.optimization)
+    def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
+      DataSource.full[F, K, V](source.key) { ks =>
+        Trace[F].span(s"datasource.${source.key}") {
+          Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
+        }
+      }(source.optimization)
 
-req.visit {
-  new Requests.DataSourceVisitor[F] {
-    def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K) =
-      (traceSource(source), k)
-  }
-}
+    req.visit {
+      new Requests.DataSourceVisitor[F] {
+        def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K) =
+          (traceSource(source), k)
+      }
+    }
 }
 
 def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](
