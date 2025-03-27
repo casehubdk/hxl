@@ -4,7 +4,7 @@ ThisBuild / crossScalaVersions := Seq(scala213Version, "3.3.0")
 ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
 
-ThisBuild / tlBaseVersion := "0.2"
+ThisBuild / tlBaseVersion := "0.3"
 ThisBuild / sonatypeCredentialHost := xerial.sbt.Sonatype.sonatype01
 //ThisBuild / tlFatalWarnings := true
 

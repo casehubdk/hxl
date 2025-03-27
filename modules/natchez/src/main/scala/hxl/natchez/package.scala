@@ -25,7 +25,7 @@ import Hxl._
 package object `natchez` {
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
-      DataSource.full[F, K, V](source.key) { ks =>
+      DataSource.full[F, K, source.K2, V](source.key)(source.k2) { ks =>
         Trace[F].span(s"datasource.${source.key}") {
           Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
         }
