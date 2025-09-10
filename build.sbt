@@ -5,7 +5,6 @@ ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
 
 ThisBuild / tlBaseVersion := "0.3"
-ThisBuild / sonatypeCredentialHost := xerial.sbt.Sonatype.sonatype01
 //ThisBuild / tlFatalWarnings := true
 
 ThisBuild / tlCiMimaBinaryIssueCheck := false
