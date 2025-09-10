@@ -47,6 +47,11 @@ sealed trait Hxl[F[_], A] {
   //
   // any further composition may destroy the optimized hxl
   def optimized(implicit F: Monad[F]): Either[Hxl[F, A], F[Hxl[F, A]]]
+
+  // Aligns this hxl, this is a hint for future composition that
+  def align: Hxl[F, A] = Hxl.align(this)
+
+  def alignM: HxlM[F, A] = align.monadic
 }
 
 object Hxl {
@@ -78,12 +83,22 @@ object Hxl {
     def optimized(implicit F: Monad[F]) =
       unFetch.flatMap(_.optimized.leftMap(F.pure(_)).merge).asRight
   }
+  final case class Align[F[_], A](fa: Hxl[F, A]) extends Hxl[F, A] {
+    def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] =
+      Align(fa.andThen(f))
+    def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
+      Align(fa.mapK(fk))
+    def optimized(implicit F: Monad[F]) =
+      Left(this)
+
+  }
 
   def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
     implicit val M: Monad[F] = F.monad
     override def apply[A](fa: Hxl[F, A]): F[Either[Hxl[F, A], A]] =
       fa match {
         case Done(a)        => M.pure(Right(a))
+        case Align(fa)      => M.pure(Left(fa))
         case LiftF(unFetch) => unFetch.map(Left(_))
         case bind: Bind[F, a, b] =>
           Requests
@@ -122,6 +137,8 @@ object Hxl {
     apply[F, K, V](k, source)
       .flatMapF(F.fromOption(_, new RuntimeException(show"Key $k not found")))
 
+  def align[F[_], A](fa: Hxl[F, A]): Hxl[F, A] = Align(fa)
+
   // Almost the same signature as parallel, except we don't have a monad, but a functor instead
   // This is because of the free monad structure of Hxl, we can defer Monad evidence until we need to run
   def applicativeInstance[F[_]: Functor, G[_]: Applicative](
@@ -137,7 +154,16 @@ object Hxl {
           case (LiftF(fa), LiftF(fb)) => LiftF(gf((fg(fa), fg(fb)).mapN(_ <*> _)))
           case (LiftF(fa), h)         => LiftF(fa.map(_ <*> h))
           case (h, LiftF(fa))         => LiftF(fa.map(h <*> _))
-          case (Done(f), Done(a))     => Done(f(a))
+
+          case (Align(fa), Align(fb)) => Align(fa.ap(fb))
+          // Synthetically align
+          case (Align(fa), Done(fb)) => Align(fa.map(_(fb)))
+          case (Done(fa), Align(fb)) => Align(fb.map(fa(_)))
+          // Missing align on right side, defer fa until later
+          case (Align(fa), b2: Bind[F, a2, A])      => Bind[F, a2, B](b2.requests, a2 => fa.ap(b2.f(a2)))
+          case (b1: Bind[F, a1, A => B], Align(fb)) => Bind[F, a1, B](b1.requests, a1 => b1.f(a1).ap(fb))
+
+          case (Done(f), Done(a)) => Done(f(a))
           case (b1: Bind[F, a1, A => B], b2: Bind[F, a2, A]) =>
             val comb = (b1.requests, b2.requests).tupled
             Bind[F, (a1, a2), B](comb, { case (a1, a2) => b1.f(a1) <*> b2.f(a2) })
