@@ -94,8 +94,11 @@ object Requests {
     Requests(View.empty, FreeApplicative.lift(a), None)
   }
 
+  def empty[F[_], A, B](source: DataSource[F, A, ?], key: A, as: B): Requests[F, B] =
+    Requests(View(Discarded(source, key)), FreeApplicative.pure(as), None)
+
   def discard[F[_], A](source: DataSource[F, A, ?], key: A): Requests[F, Unit] =
-    Requests(View(Discarded(source, key)), FreeApplicative.pure(()), None)
+    empty(source, key, ())
 
   final case class DSKey0(value: Any) extends AnyRef
   final case class ValueKey(value: Any) extends AnyRef

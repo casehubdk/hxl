@@ -20,6 +20,7 @@ import munit.FunSuite
 import cats.data._
 import cats._
 import cats.implicits._
+import scala.collection.concurrent.TrieMap
 
 final case class FailingKey(key: String) extends DSKey[String, String]
 
@@ -158,5 +159,46 @@ class HxlEvaluationTest extends FunSuite {
     Hxl.runSequential(s)
     val end = System.currentTimeMillis()
     println("Benchmark result: " + (end - start) + "ms")
+  }
+
+  case class VarKey(str: String) extends DSKey[String, String]
+  test("alignment".only) {
+    val m = TrieMap.empty[String, Int]
+    def ds(s: String) = DataSource.from(VarKey(s)) { ks =>
+      m.updateWith(s) {
+        case None    => Some(1)
+        case Some(i) => Some(i + 1)
+      }
+      ks.toList.map(s => s -> s).toMap.pure[Id]
+    }
+    val suf = Hxl("b", ds("b"))
+
+    def f(
+        x: Option[String],
+        align: Boolean
+    ): Hxl[Id, Unit] = {
+      def doAlign[A](fa: Hxl[Id, A]): Hxl[Id, A] =
+        if (align) fa
+        else fa
+
+      for {
+        _ <- doAlign {
+          x.traverse(str => Hxl(str, ds("a")))
+            .map(_.flatten)
+            .andThen(_.traverse { str2 =>
+              doAlign(Hxl(str2, ds("a2")))
+            })
+        }.monadic
+        // _ <- doAlign(Hxl("a", ds("a"))).monadic
+        _ <- doAlign(suf).monadic
+      } yield ()
+    }.hxl
+
+    val p1 = f(None, true)
+    val p2 = f("a".some, true)
+    val p = p1 *> p2
+    Hxl.runSequential(p)
+    assertEquals(m("a"), 1)
+    assertEquals(m("b"), 1)
   }
 }

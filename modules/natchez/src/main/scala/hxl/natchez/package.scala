@@ -46,18 +46,12 @@ package object `natchez` {
     new Compiler[F, Effect] {
       def apply[A](fa: Hxl[F, A]): Hxl.Target[F, Effect, A] =
         fa match {
-          case Hxl.LiftF(unFetch) =>
-            StateT.liftF {
-              Trace[G].span("hxl.fetch") {
-                compiler(Hxl.LiftF(unFetch))
-              }
-            }
-          case bind: Hxl.Bind[F, a, b] =>
+          case bind: Hxl.Run[F, A] =>
             StateT { (round: Int) =>
               Trace[G]
                 .span("hxl.bind") {
                   Trace[G].put("round" -> round) *> compiler {
-                    Hxl.Bind(traceRequests(bind.requests), bind.f)
+                    Hxl.Run(traceRequests(bind.requests))
                   }
                 }
                 .map(round + 1 -> _)

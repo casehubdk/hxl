@@ -26,7 +26,8 @@ import cats.implicits._
  * `andThen` exists as an alternative to `flatMap`, much like `Validated`.
  */
 sealed trait Hxl[F[_], A] {
-  def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B]
+  def andThen[B](f: A => Hxl[F, B]): Hxl[F, B] =
+    Hxl.AndThen(this, f)
 
   def flatMapF[B](f: A => F[B])(implicit F: Functor[F]): Hxl[F, B] =
     andThen(a => Hxl.liftF(f(a)))
@@ -49,9 +50,9 @@ sealed trait Hxl[F[_], A] {
   def optimized(implicit F: Monad[F]): Either[Hxl[F, A], F[Hxl[F, A]]]
 
   // Aligns this hxl, this is a hint for future composition that
-  def align: Hxl[F, A] = Hxl.align(this)
+  // def align: Hxl[F, A] = Hxl.align(this)
 
-  def alignM: HxlM[F, A] = align.monadic
+  // def alignM: HxlM[F, A] = align.monadic
 }
 
 object Hxl {
@@ -61,50 +62,46 @@ object Hxl {
 
   // Almost a free monad
   final case class Done[F[_], A](value: A) extends Hxl[F, A] {
-    def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] = f(value)
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Done(value)
     def optimized(implicit F: Monad[F]) = Left(this)
   }
-  final case class Bind[F[_], A, B](
-      requests: Requests[F, A],
-      f: A => Hxl[F, B]
-  ) extends Hxl[F, B] {
-    def andThen[C](f2: B => Hxl[F, C])(implicit F: Functor[F]): Hxl[F, C] =
-      Bind(requests, f.andThen(_.andThen(f2)))
-    def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] =
-      Bind(requests.mapK(fk), f.andThen(_.mapK(fk)))
-    def optimized(implicit F: Monad[F]) = Left(Bind(requests.optimized, f))
+  final case class Run[F[_], A](requests: Requests[F, A]) extends Hxl[F, A] {
+    def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Run(requests.mapK(fk))
+    def optimized(implicit F: Monad[F]) = Left(Run(requests.optimized))
   }
   final case class LiftF[F[_], A](unFetch: F[Hxl[F, A]]) extends Hxl[F, A] {
-    def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] =
-      LiftF(unFetch.map(_.andThen(f)))
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
       LiftF(fk(unFetch).map(_.mapK(fk)))
     def optimized(implicit F: Monad[F]) =
       unFetch.flatMap(_.optimized.leftMap(F.pure(_)).merge).asRight
   }
-  final case class Align[F[_], A](fa: Hxl[F, A]) extends Hxl[F, A] {
-    def andThen[B](f: A => Hxl[F, B])(implicit F: Functor[F]): Hxl[F, B] =
-      Align(fa.andThen(f))
-    def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
-      Align(fa.mapK(fk))
-    def optimized(implicit F: Monad[F]) =
-      Left(this)
+  // final case class Align[F[_], A](fa: Hxl[F, A]) extends Hxl[F, A] {
+  //   def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
+  //     Align(fa.mapK(fk))
+  //   def optimized(implicit F: Monad[F]) =
+  //     Left(this)
+  // }
+  final case class AndThen[F[_], A, B](fa: Hxl[F, A], fb: A => Hxl[F, B]) extends Hxl[F, B] {
+    override def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] = ???
 
+    override def optimized(implicit F: Monad[F]): Either[Hxl[F, B], F[Hxl[F, B]]] = ???
   }
 
   def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
     implicit val M: Monad[F] = F.monad
     override def apply[A](fa: Hxl[F, A]): F[Either[Hxl[F, A], A]] =
-      fa match {
-        case Done(a)        => M.pure(Right(a))
-        case Align(fa)      => M.pure(Left(fa))
-        case LiftF(unFetch) => unFetch.map(Left(_))
-        case bind: Bind[F, a, b] =>
-          Requests
-            .run[F, a](bind.requests)
-            .map(bind.f)
-            .map(_.asLeft)
+      M.unit >> {
+        fa match {
+          case Done(a) => M.pure(Right(a))
+          // case Align(fa)      => M.pure(Left(fa))
+          case LiftF(unFetch) => unFetch.map(Left(_))
+          case at: AndThen[F, a, A] =>
+            apply(at.fa).map {
+              case Left(h)  => Left(h.andThen(at.fb))
+              case Right(a) => Left(at.fb(a))
+            }
+          case bind: Run[F, A] => Requests.run[F, A](bind.requests).map(Right(_))
+        }
       }
   }
 
@@ -126,18 +123,18 @@ object Hxl {
 
   def apply[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Option[V]] =
     source.optimization match {
-      case Some(ev) => Bind[F, Unit, Option[V]](Requests.discard(source, k), x => Done(Some(ev(x))))
-      case None     => Bind[F, Option[V], Option[V]](Requests.lift(source, k), Done(_))
+      case Some(ev) => Run[F, Option[V]](Requests.empty(source, k, Some(ev(()))))
+      case None     => Run[F, Option[V]](Requests.lift(source, k))
     }
 
   def discard[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Unit] =
-    Bind[F, Unit, Unit](Requests.discard(source, k), Done(_))
+    Run[F, Unit](Requests.discard(source, k))
 
   def force[F[_], K: Show, V](k: K, source: DataSource[F, K, V])(implicit F: ApplicativeThrow[F]): Hxl[F, V] =
     apply[F, K, V](k, source)
       .flatMapF(F.fromOption(_, new RuntimeException(show"Key $k not found")))
 
-  def align[F[_], A](fa: Hxl[F, A]): Hxl[F, A] = Align(fa)
+  // def align[F[_], A](fa: Hxl[F, A]): Hxl[F, A] = Align(fa)
 
   // Almost the same signature as parallel, except we don't have a monad, but a functor instead
   // This is because of the free monad structure of Hxl, we can defer Monad evidence until we need to run
@@ -149,27 +146,37 @@ object Hxl {
     type H[A] = Hxl[F, A]
     new Applicative[H] {
       def pure[A](x: A): H[A] = Done(x)
-      def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] =
+      def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] = {
         (ff, fa) match {
           case (LiftF(fa), LiftF(fb)) => LiftF(gf((fg(fa), fg(fb)).mapN(_ <*> _)))
           case (LiftF(fa), h)         => LiftF(fa.map(_ <*> h))
           case (h, LiftF(fa))         => LiftF(fa.map(h <*> _))
+          case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
+            AndThen[F, (a1, a2), B](
+              self.tuple2(at.fa, ab.fa),
+              { case (a1, a2) => at.fb(a1).ap(ab.fb(a2)) }
+            )
 
-          case (Align(fa), Align(fb)) => Align(fa.ap(fb))
-          // Synthetically align
-          case (Align(fa), Done(fb)) => Align(fa.map(_(fb)))
-          case (Done(fa), Align(fb)) => Align(fb.map(fa(_)))
-          // Missing align on right side, defer fa until later
-          case (Align(fa), b2: Bind[F, a2, A])      => Bind[F, a2, B](b2.requests, a2 => fa.ap(b2.f(a2)))
-          case (b1: Bind[F, a1, A => B], Align(fb)) => Bind[F, a1, B](b1.requests, a1 => b1.f(a1).ap(fb))
+          // flatMap <*> batch -> move batch into left side of flatMap
+          // to be optimistic. The choice is arbitrary.
+          case (at: AndThen[F, a, A => B], fb) =>
+            AndThen[F, (a, A), B](
+              (at.fa, fb).tupled,
+              { case (a, a2) => self.ap(at.fb(a))(Done(a2)) }
+            )
+          case (fa, ab: AndThen[F, a, A]) =>
+            AndThen[F, (A => B, a), B](
+              (fa, ab.fa).tupled,
+              { case (f, a2) => self.ap(Done(f))(ab.fb(a2)) }
+            )
 
           case (Done(f), Done(a)) => Done(f(a))
-          case (b1: Bind[F, a1, A => B], b2: Bind[F, a2, A]) =>
-            val comb = (b1.requests, b2.requests).tupled
-            Bind[F, (a1, a2), B](comb, { case (a1, a2) => b1.f(a1) <*> b2.f(a2) })
-          case (b: Bind[F, a, A => B], Done(a)) => Bind[F, a, B](b.requests, b.f(_).map(_(a)))
-          case (Done(g), b: Bind[F, a, A])      => Bind[F, a, B](b.requests, b.f(_).map(g))
+          case (r1: Run[F, A => B], r2: Run[F, A]) =>
+            self.map(Run((r1.requests, r2.requests).tupled)) { case (f, a) => f(a) }
+          case (r: Run[F, A => B], Done(a)) => Run(r.requests.map(_(a)))
+          case (Done(f), r: Run[F, A])      => Run(r.requests.map(f(_)))
         }
+      }
     }
   }
 
@@ -214,7 +221,7 @@ object HxlM {
 
   // Monad for HxlM
   // HxlM can implement any covariant typeclass (but not contravariant ones since `F ~> HxlM` but not `HxlM ~> F`).
-  implicit def monadForHxlM[F[_]: Functor]: Monad[HxlM[F, *]] = {
+  implicit def monadForHxlM[F[_]]: Monad[HxlM[F, *]] = {
     type G[A] = HxlM[F, A]
     new Monad[G] {
       override def pure[A](x: A): G[A] = HxlM(Hxl.Done(x))
