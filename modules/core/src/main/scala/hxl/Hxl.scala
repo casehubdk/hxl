@@ -255,7 +255,6 @@ object instances {
         override def parallel: F ~> F = FunctionK.id[F]
         override def applicative: Applicative[F] = Hxl.applicativeInstance[F0, P.F](P.parallel, P.sequential)
         override def monad: Monad[Hxl[F0, *]] = {
-          implicit val m = P.monad
           new Monad[Hxl[F0, *]] {
             override def flatMap[A, B](fa: Hxl[F0, A])(f: A => Hxl[F0, B]): Hxl[F0, B] =
               fa.andThen(f)
