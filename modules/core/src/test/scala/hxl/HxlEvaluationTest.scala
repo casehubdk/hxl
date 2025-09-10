@@ -162,7 +162,7 @@ class HxlEvaluationTest extends FunSuite {
   }
 
   case class VarKey(str: String) extends DSKey[String, String]
-  test("alignment".only) {
+  test("alignment") {
     val m = TrieMap.empty[String, Int]
     def ds(s: String) = DataSource.from(VarKey(s)) { ks =>
       m.updateWith(s) {
