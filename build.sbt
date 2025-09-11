@@ -21,6 +21,7 @@ ThisBuild / headerLicense := Some(HeaderLicense.Custom("Copyright (c) 2023 CaseH
 
 ThisBuild / startYear := Some(2024)
 
+
 lazy val sharedSettings = Seq(
   libraryDependencies ++= Seq(
     "org.typelevel" %% "cats-core" % "2.9.0",
