@@ -3,7 +3,7 @@ ThisBuild / scalaVersion := scala213Version
 ThisBuild / crossScalaVersions := Seq(scala213Version, "3.3.0")
 ThisBuild / organization := "io.github.casehubdk"
 ThisBuild / organizationName := "CaseHubDK"
-
+ThisBuild / tlUntaggedAreSnapshots := false
 ThisBuild / tlBaseVersion := "0.3"
 //ThisBuild / tlFatalWarnings := true
 
