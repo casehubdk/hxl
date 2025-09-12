@@ -75,16 +75,15 @@ object Hxl {
     def optimized(implicit F: Monad[F]) =
       unFetch.flatMap(_.optimized.leftMap(F.pure(_)).merge).asRight
   }
-  // final case class Align[F[_], A](fa: Hxl[F, A]) extends Hxl[F, A] {
-  //   def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
-  //     Align(fa.mapK(fk))
-  //   def optimized(implicit F: Monad[F]) =
-  //     Left(this)
-  // }
   final case class AndThen[F[_], A, B](fa: Hxl[F, A], fb: A => Hxl[F, B]) extends Hxl[F, B] {
-    override def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] = ???
+    override def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] = 
+      AndThen(fa.mapK(fk), (a: A) => fb(a).mapK(fk))
 
-    override def optimized(implicit F: Monad[F]): Either[Hxl[F, B], F[Hxl[F, B]]] = ???
+    override def optimized(implicit F: Monad[F]): Either[Hxl[F, B], F[Hxl[F, B]]] = 
+      fa.optimized match {
+        case Left(h)  => Left(AndThen(h, fb))
+        case Right(fh) => Right(fh.map(h => AndThen(h, fb)))
+      }
   }
 
   def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
