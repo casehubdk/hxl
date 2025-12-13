@@ -38,8 +38,10 @@ sealed trait Hxl[F[_], A] {
   // Useful for combinators such as `flatTraverse`
   def monadic: HxlM[F, A] = HxlM(this)
 
-  def foldMap[G[_]](fk: Hxl.Compiler[F, G])(implicit G: Monad[G]): G[A] =
-    this.tailRecM(fk(_))
+  def foldMap[G[_]](fk: Hxl.Compiler[F, G])(implicit G: Monad[G]): G[A] = {
+    val full = Hxl.Compiler.fullCompiler(fk)
+    this.tailRecM(full(_))
+  }
 
   // runs up to the first batch and optimizes it
   //
@@ -58,18 +60,34 @@ sealed trait Hxl[F[_], A] {
 object Hxl {
   type Target[F[_], G[_], A] = G[Either[Hxl[F, A], A]]
 
-  type Compiler[F[_], G[_]] = Hxl[F, *] ~> Target[F, G, *]
+  type Compiler[F[_], G[_]] = NonBind[F, *] ~> Target[F, G, *]
+  object Compiler {
+    def fullCompiler[F[_], G[_]](compiler: Compiler[F, G])(implicit G: Applicative[G]): Hxl[F, *] ~> Target[F, G, *] =
+      new (Hxl[F, *] ~> Target[F, G, *]) {
+        def apply[A](fa: Hxl[F, A]): Target[F, G, A] = fa match {
+          case nb: NonBind[F, A] => compiler(nb)
+          case andThen: AndThen[F, a, A] =>
+            val fb: G[Either[Hxl[F, a], a]] = G.unit *> apply(andThen.fa)
+            fb.map {
+              case Left(h)  => Left(h.andThen(andThen.fb))
+              case Right(a) => Left(andThen.fb(a))
+            }
+        }
+      }
+  }
+
+  sealed trait NonBind[F[_], A] extends Hxl[F, A]
 
   // Almost a free monad
-  final case class Done[F[_], A](value: A) extends Hxl[F, A] {
+  final case class Done[F[_], A](value: A) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Done(value)
     def optimized(implicit F: Monad[F]) = Left(this)
   }
-  final case class Run[F[_], A](requests: Requests[F, A]) extends Hxl[F, A] {
+  final case class Run[F[_], A](requests: Requests[F, A]) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Run(requests.mapK(fk))
     def optimized(implicit F: Monad[F]) = Left(Run(requests.optimized))
   }
-  final case class LiftF[F[_], A](unFetch: F[Hxl[F, A]]) extends Hxl[F, A] {
+  final case class LiftF[F[_], A](unFetch: F[Hxl[F, A]]) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
       LiftF(fk(unFetch).map(_.mapK(fk)))
     def optimized(implicit F: Monad[F]) =
@@ -88,18 +106,12 @@ object Hxl {
 
   def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
     implicit val M: Monad[F] = F.monad
-    override def apply[A](fa: Hxl[F, A]): F[Either[Hxl[F, A], A]] =
+    override def apply[A](fa: NonBind[F, A]): F[Either[Hxl[F, A], A]] =
       M.unit >> {
         fa match {
-          case Done(a) => M.pure(Right(a))
-          // case Align(fa)      => M.pure(Left(fa))
+          case Done(a)        => M.pure(Right(a))
           case LiftF(unFetch) => unFetch.map(Left(_))
-          case at: AndThen[F, a, A] =>
-            apply(at.fa).map {
-              case Left(h)  => Left(h.andThen(at.fb))
-              case Right(a) => Left(at.fb(a))
-            }
-          case bind: Run[F, A] => Requests.run[F, A](bind.requests).map(Right(_))
+          case run: Run[F, A] => Requests.run[F, A](run.requests).map(Right(_))
         }
       }
   }

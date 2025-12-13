@@ -47,7 +47,7 @@ class TracingTest extends CatsEffectSuite {
             n.intValue()
           case _ => 0
         }
-        assertEquals(x, 1)
+        assertEquals(x, 3)
       }
     }
   }

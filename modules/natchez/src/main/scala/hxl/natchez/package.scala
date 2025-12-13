@@ -27,7 +27,7 @@ package object `natchez` {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
       DataSource.full[F, K, source.K2, V](source.key)(source.k2) { ks =>
         Trace[F].span(s"datasource.${source.key}") {
-          Trace[F].put("keys" -> ks.size.toString) *> source.batch(ks)
+          Trace[F].put("keys" -> ks.size) *> source.batch(ks)
         }
       }(source.optimization)
 
@@ -44,15 +44,23 @@ package object `natchez` {
   ): Compiler[F, StateT[G, Int, *]] = {
     type Effect[A] = StateT[G, Int, A]
     new Compiler[F, Effect] {
-      def apply[A](fa: Hxl[F, A]): Hxl.Target[F, Effect, A] =
+      def apply[A](fa: NonBind[F, A]): Hxl.Target[F, Effect, A] =
         fa match {
-          case bind: Hxl.Run[F, A] =>
+          case run: Hxl.Run[F, A] =>
             StateT { (round: Int) =>
               Trace[G]
-                .span("hxl.bind") {
+                .span("hxl.run") {
                   Trace[G].put("round" -> round) *> compiler {
-                    Hxl.Run(traceRequests(bind.requests))
+                    Hxl.Run(traceRequests(run.requests))
                   }
+                }
+                .map(round + 1 -> _)
+            }
+          case liftF: LiftF[F, A] =>
+            StateT { (round: Int) =>
+              Trace[G]
+                .span("hxl.liftF") {
+                  Trace[G].put("round" -> round) *> compiler(liftF)
                 }
                 .map(round + 1 -> _)
             }
