@@ -155,6 +155,9 @@ object Hxl {
   ): Applicative[Hxl[F, *]] = {
     implicit def self: Applicative[Hxl[F, *]] = applicativeInstance[F, G](fg, gf)
     type H[A] = Hxl[F, A]
+    def suspend[A](ha: => H[A]): H[A] = LiftF[F, A](
+      gf(Applicative[G].unit.map(_ => ha))
+    )
     new Applicative[H] {
       def pure[A](x: A): H[A] = Done(x)
       def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] = {
@@ -164,21 +167,21 @@ object Hxl {
           case (h, LiftF(fa))         => LiftF(fa.map(h <*> _))
           case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
             AndThen[F, (a1, a2), B](
-              self.tuple2(at.fa, ab.fa),
-              { case (a1, a2) => at.fb(a1).ap(ab.fb(a2)) }
+              suspend(self.tuple2(at.fa, ab.fa)),
+              { case (a1, a2) => suspend(at.fb(a1).ap(ab.fb(a2))) }
             )
 
           // flatMap <*> batch -> move batch into left side of flatMap
           // to be optimistic. The choice is arbitrary.
           case (at: AndThen[F, a, A => B], fb) =>
             AndThen[F, (a, A), B](
-              (at.fa, fb).tupled,
-              { case (a, a2) => self.ap(at.fb(a))(Done(a2)) }
+              suspend((at.fa, fb).tupled),
+              { case (a, a2) => suspend(self.ap(at.fb(a))(Done(a2))) }
             )
           case (fa, ab: AndThen[F, a, A]) =>
             AndThen[F, (A => B, a), B](
-              (fa, ab.fa).tupled,
-              { case (f, a2) => self.ap(Done(f))(ab.fb(a2)) }
+              suspend((fa, ab.fa).tupled),
+              { case (f, a2) => suspend(self.ap(Done(f))(ab.fb(a2))) }
             )
 
           case (Done(f), Done(a)) => Done(f(a))
