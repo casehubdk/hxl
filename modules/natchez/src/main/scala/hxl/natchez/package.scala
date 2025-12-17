@@ -56,14 +56,6 @@ package object `natchez` {
                 }
                 .map(round + 1 -> _)
             }
-          case liftF: LiftF[F, A] =>
-            StateT { (round: Int) =>
-              Trace[G]
-                .span("hxl.liftF") {
-                  Trace[G].put("round" -> round) *> compiler(liftF)
-                }
-                .map(round + 1 -> _)
-            }
           case other => StateT.liftF(compiler(other))
         }
     }
