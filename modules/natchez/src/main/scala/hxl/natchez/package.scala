@@ -25,18 +25,18 @@ import Hxl._
 package object `natchez` {
   import NatchezInternal._
   object HxlT {
-    def unbatched[F[_]: Applicative, A](name: String)(fa: F[A]): Hxl[F, A] = {
+    def subtrace[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
       val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
-        keys.toList.traverse(k => k.fa.map(a => (k, a))).map(_.toMap)
+        val h = keys.toList.traverse(k => k.fa.map(a => (k, a))).map(_.toMap)
+        Trace[F].span(s"subbatch-hxl-$name") {
+          TracedRunner.runSequential(h)
+        }
       }
       Hxl(
         new HxlSpanKey(fa),
         ds
       ).map(_.get)
     }
-
-    def unbatchedPure[F[_]: Applicative, A](name: String)(a: A): Hxl[F, A] =
-      unbatched(name)(Applicative[F].pure(a))
   }
 
   object TracedRunner {
@@ -51,7 +51,7 @@ package object `natchez` {
 }
 
 object NatchezInternal {
-  final class HxlSpanKey[F[_], A](val fa: F[A])
+  final class HxlSpanKey[F[_], A](val fa: Hxl[F, A])
   final case class HxlSpanDSKey[F[_], A](name: String) extends DSKey[HxlSpanKey[F, A], A]
 
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
