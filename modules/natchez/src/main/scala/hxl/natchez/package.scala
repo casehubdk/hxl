@@ -23,6 +23,37 @@ import cats._
 import Hxl._
 
 package object `natchez` {
+  import NatchezInternal._
+  object HxlT {
+    def unbatched[F[_]: Applicative, A](name: String)(fa: F[A]): Hxl[F, A] = {
+      val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
+        keys.toList.traverse(k => k.fa.map(a => (k, a))).map(_.toMap)
+      }
+      Hxl(
+        new HxlSpanKey(fa),
+        ds
+      ).map(_.get)
+    }
+
+    def unbatchedPure[F[_]: Applicative, A](name: String)(a: A): Hxl[F, A] =
+      unbatched(name)(Applicative[F].pure(a))
+  }
+
+  object TracedRunner {
+    def runPar[F[_]: Parallel: Monad: Trace, A](fa: Hxl[F, A]): F[A] =
+      fa.foldMap(composeTracing[F, F](Hxl.parallelRunner)).runA(1)
+
+    def runSequential[F[_]: Monad: Trace, A](fa: Hxl[F, A]): F[A] = {
+      implicit val P: Parallel[F] = Parallel.identity[F]
+      runPar[F, A](fa)
+    }
+  }
+}
+
+object NatchezInternal {
+  final class HxlSpanKey[F[_], A](val fa: F[A])
+  final case class HxlSpanDSKey[F[_], A](name: String) extends DSKey[HxlSpanKey[F, A], A]
+
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
       DataSource.full[F, K, source.K2, V](source.key)(source.k2) { ks =>
@@ -61,13 +92,4 @@ package object `natchez` {
     }
   }
 
-  object TracedRunner {
-    def runPar[F[_]: Parallel: Monad: Trace, A](fa: Hxl[F, A]): F[A] =
-      fa.foldMap(composeTracing[F, F](Hxl.parallelRunner)).runA(1)
-
-    def runSequential[F[_]: Monad: Trace, A](fa: Hxl[F, A]): F[A] = {
-      implicit val P: Parallel[F] = Parallel.identity[F]
-      runPar[F, A](fa)
-    }
-  }
 }
