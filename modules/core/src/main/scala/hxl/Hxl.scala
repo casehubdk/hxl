@@ -153,43 +153,70 @@ object Hxl {
       fg: F ~> G,
       gf: G ~> F
   ): Applicative[Hxl[F, *]] = {
-    implicit def self: Applicative[Hxl[F, *]] = applicativeInstance[F, G](fg, gf)
     type H[A] = Hxl[F, A]
-    def suspend[A](ha: => H[A]): H[A] = LiftF[F, A](
-      gf(Applicative[G].unit.map(_ => ha))
-    )
+
+    def ap_[A, B](n: Int, ff: H[A => B], fa: H[A]): H[B] = {
+      def pseudoApply(n1: Int): Apply[H] = new Apply[H] {
+        def map[A0, B0](fa: H[A0])(f: A0 => B0): H[B0] =
+          fa match {
+            case LiftF(fa) => LiftF(fa.map(a => pseudoApply(0).map(a)(f)))
+            case Done(a)   => Done(f(a))
+            case other     => ap_(n1, Done(f), other)
+          }
+        def ap[A0, B0](ff: H[A0 => B0])(fa: H[A0]): H[B0] = ap_(n1, ff, fa)
+      }
+      val reset = pseudoApply(0)
+      val forward = pseudoApply(n + 1)
+
+      val stacksafeDepth = 32
+
+      def suspendTuple2[X, Y](x: H[X], y: H[Y]): H[(X, Y)] =
+        (x, y) match {
+          case (LiftF(_), _) | (_, LiftF(_)) => reset.tuple2(x, y)
+          case _ =>
+            if (n >= stacksafeDepth) {
+              LiftF[F, (X, Y)](
+                gf(Applicative[G].unit.map(_ => reset.tuple2(x, y)))
+              )
+            } else forward.tuple2(x, y)
+        }
+
+      (ff, fa) match {
+        case (LiftF(fa), LiftF(fb)) =>
+          LiftF(gf((fg(fa), fg(fb)).mapN(reset.ap(_)(_))))
+        case (LiftF(fa), h) => LiftF(fa.map(reset.ap(_)(h)))
+        case (h, LiftF(fa)) => LiftF(fa.map(reset.ap(h)(_)))
+        case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
+          AndThen[F, (a1, a2), B](
+            suspendTuple2(at.fa, ab.fa),
+            { case (a1, a2) => reset.ap(at.fb(a1))(ab.fb(a2)) }
+          )
+
+        // flatMap <*> batch -> move batch into left side of flatMap
+        // to be optimistic. The choice is arbitrary.
+        case (at: AndThen[F, a, A => B], fb) =>
+          AndThen[F, (a, A), B](
+            suspendTuple2(at.fa, fb),
+            { case (a, a2) => reset.ap(at.fb(a))(Done(a2)) }
+          )
+        case (fa, ab: AndThen[F, a, A]) =>
+          AndThen[F, (A => B, a), B](
+            suspendTuple2(fa, ab.fa),
+            { case (f, a2) => reset.ap(Done(f))(ab.fb(a2)) }
+          )
+
+        case (Done(f), Done(a)) => Done(f(a))
+        case (r1: Run[F, A => B], r2: Run[F, A]) =>
+          reset.map(Run((r1.requests, r2.requests).tupled)) { case (f, a) => f(a) }
+        case (r: Run[F, A => B], Done(a)) => Run(r.requests.map(_(a)))
+        case (Done(f), r: Run[F, A])      => Run(r.requests.map(f(_)))
+      }
+    }
+
     new Applicative[H] {
       def pure[A](x: A): H[A] = Done(x)
       def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] = {
-        (ff, fa) match {
-          case (LiftF(fa), LiftF(fb)) => LiftF(gf((fg(fa), fg(fb)).mapN(_ <*> _)))
-          case (LiftF(fa), h)         => LiftF(fa.map(_ <*> h))
-          case (h, LiftF(fa))         => LiftF(fa.map(h <*> _))
-          case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
-            AndThen[F, (a1, a2), B](
-              suspend(self.tuple2(at.fa, ab.fa)),
-              { case (a1, a2) => suspend(at.fb(a1).ap(ab.fb(a2))) }
-            )
-
-          // flatMap <*> batch -> move batch into left side of flatMap
-          // to be optimistic. The choice is arbitrary.
-          case (at: AndThen[F, a, A => B], fb) =>
-            AndThen[F, (a, A), B](
-              suspend((at.fa, fb).tupled),
-              { case (a, a2) => suspend(self.ap(at.fb(a))(Done(a2))) }
-            )
-          case (fa, ab: AndThen[F, a, A]) =>
-            AndThen[F, (A => B, a), B](
-              suspend((fa, ab.fa).tupled),
-              { case (f, a2) => suspend(self.ap(Done(f))(ab.fb(a2))) }
-            )
-
-          case (Done(f), Done(a)) => Done(f(a))
-          case (r1: Run[F, A => B], r2: Run[F, A]) =>
-            self.map(Run((r1.requests, r2.requests).tupled)) { case (f, a) => f(a) }
-          case (r: Run[F, A => B], Done(a)) => Run(r.requests.map(_(a)))
-          case (Done(f), r: Run[F, A])      => Run(r.requests.map(f(_)))
-        }
+        ap_(0, ff, fa)
       }
     }
   }
