@@ -27,7 +27,9 @@ package object `natchez` {
   object HxlT {
     def parSubtrace[F[_]: Monad: Parallel: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
       val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
-        val h = keys.toList.traverse(k => k.fa.map(a => (k, a))).map(_.toMap)
+        // .traverse will use monad's applicative to derive hxl applicative
+        implicit val par: Parallel[Hxl[F, *]] = hxl.instances.parallel.parallelForHxl[F]
+        val h = keys.toList.parTraverse(k => k.fa.map(a => (k, a))).map(_.toMap)
         Trace[F].span(s"subbatch-hxl-$name") {
           TracedRunner.runPar(h)
         }
