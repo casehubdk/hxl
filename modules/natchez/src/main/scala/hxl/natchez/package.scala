@@ -25,17 +25,21 @@ import Hxl._
 package object `natchez` {
   import NatchezInternal._
   object HxlT {
-    def subtrace[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
+    def parSubtrace[F[_]: Monad: Parallel: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
       val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
         val h = keys.toList.traverse(k => k.fa.map(a => (k, a))).map(_.toMap)
         Trace[F].span(s"subbatch-hxl-$name") {
-          TracedRunner.runSequential(h)
+          TracedRunner.runPar(h)
         }
       }
       Hxl(
         new HxlSpanKey(fa),
         ds
       ).map(_.get)
+    }
+    def subtrace[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
+      implicit val P: Parallel[F] = Parallel.identity[F]
+      parSubtrace[F, A](name)(fa)
     }
   }
 
