@@ -19,6 +19,7 @@ package hxl
 import cats._
 import cats.arrow._
 import cats.implicits._
+import cats.data.*
 
 /*
  * Hxl is a value that that represents a computation that may be batched.
@@ -103,6 +104,42 @@ object Hxl {
         case Right(fh) => Right(fh.map(h => AndThen(h, fb)))
       }
   }
+  trait ErrorTag[E]
+  final case class Raised[E](tag: ErrorTag[E], error: E)
+  final case class Errs[F[_], A](raiseds: NonEmptyChain[Raised[?]]) extends NonBind[F, A] {
+    def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Errs(raiseds)
+    def optimized(implicit F: Monad[F]) = Left(this)
+  }
+
+  trait Raise[F[_], E] {
+    def raise[A](e: E): Hxl[F, A]
+  }
+
+  def channel[F[_]: Functor, E, A](over: Raise[F, E] => Hxl[F, A])(implicit sg: Semigroup[E]): Hxl[F, Either[E, A]] = {
+    val tag = new ErrorTag[E] {}
+    val exec = over(new Raise[F, E] {
+      def raise[A0](e: E): Hxl[F, A0] =
+        Errs(NonEmptyChain.one(Raised(tag, e)))
+    })
+    def handle[B](fa: Hxl[F, B]): Hxl[F, Either[E, B]] =
+      fa match {
+        case Errs(raiseds) =>
+          val matching = raiseds.filter(_.tag == tag).map(_.error.asInstanceOf[E])
+          NonEmptyChain.fromChain(matching) match {
+            case None => Errs(raiseds)
+            case Some(es) => Done(Left(es.reduce))
+          }
+        case Done(a) => Done(Right(a))
+        case LiftF(unFetch) => LiftF(unFetch.map(handle))
+        case andThen: AndThen[F, a, B] => 
+          handle(andThen.fa).andThen {
+            case Left(e) => Done(Left(e))
+            case Right(a) => handle(andThen.fb(a))
+          }
+        case run: Run[F, B] => Run(run.requests.map(Right(_)))
+      }
+    handle(exec)
+  }
 
   def parallelRunner[F[_]](implicit F: Parallel[F]): Compiler[F, F] = new Compiler[F, F] {
     implicit val M: Monad[F] = F.monad
@@ -112,6 +149,7 @@ object Hxl {
           case Done(a)        => M.pure(Right(a))
           case LiftF(unFetch) => unFetch.map(Left(_))
           case run: Run[F, A] => Requests.run[F, A](run.requests).map(Right(_))
+          case Errs(_) => throw new RuntimeException("Unhandled error")
         }
       }
   }
@@ -182,6 +220,9 @@ object Hxl {
         }
 
       (ff, fa) match {
+        case (Errs(e1), Errs(e2)) => Errs(e1 ++ e2)
+        case (Errs(e), _)          => Errs(e)
+        case (_, Errs(e))          => Errs(e)
         case (LiftF(fa), LiftF(fb)) =>
           LiftF(gf((fg(fa), fg(fb)).mapN(reset.ap(_)(_))))
         case (LiftF(fa), h) => LiftF(fa.map(reset.ap(_)(h)))
