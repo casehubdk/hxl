@@ -133,7 +133,7 @@ object Requests {
   def run[F[_]: Parallel, A](requests: Requests[F, A])(implicit
       F: Applicative[F]
   ): F[A] = {
-    val xs = generateRequestKeys(requests)
+    val xs = requests.cachedRequests.getOrElse(generateRequestKeys(requests))
 
     val ops = xs.toSeq.parTraverse { case (_, t) =>
       t.keys.view
