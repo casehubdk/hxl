@@ -114,17 +114,20 @@ Ignoring implementation details, the core language can be presented as:
 
 ```haskell
 data Hxl f a
-  = Pure a
-  | Fetch (Requests f a)
+  = Run (Requests f a)
   | forall b. Bind (Hxl f b) (b -> Hxl f a)
-  | Errors [Raised]
+  | Errs [Raised]
 ```
 
 This is Haskell notation for the idea, not a complete concrete definition.
 `Requests f a` is a batchable frontier which, once run, produces an `a`.
-`Errors` contains typed errors hidden behind tags. The real Scala artifact uses
-`Run Requests`, `AndThen`, and `Errs`; the smaller presentation is enough for
-the argument here.
+`Errs` contains typed errors hidden behind tags. The value constructor for
+ordinary pure values is the pure request frontier:
+
+```haskell
+pure :: a -> Hxl f a
+pure = Run . pure
+```
 
 The monadic interface is ordinary:
 
@@ -136,62 +139,56 @@ The monadic interface is ordinary:
 The applicative interface combines independent frontiers:
 
 ```haskell
-Fetch rf <*> Fetch rx = Fetch (rf <*> rx)
+Run rf <*> Run rx = Run (rf <*> rx)
 ```
 
 and domain errors accumulate applicatively:
 
 ```haskell
-Errors e1 <*> Errors e2 = Errors (e1 <> e2)
+Errs e1 <*> Errs e2 = Errs (e1 <> e2)
 ```
 
 ## Applicative Composition
 
 The applicative instance is the part of the calculus that exposes later
-frontiers without discarding monadic structure. At this level of presentation,
-it is a case analysis over visible constructors:
+frontiers without discarding monadic structure. The following is close to the
+whole definition; production code still needs the usual stack-safety and effect
+translation cases.
 
 ```haskell
-Pure f <*> Pure x =
-  Pure (f x)
+instance Applicative (Hxl f) where
+  pure = Run . pure
+  (<*>) = apHxl
 
-Fetch rf <*> Fetch rx =
-  Fetch (rf <*> rx)
+apHxl :: Hxl f (a -> b) -> Hxl f a -> Hxl f b
+apHxl ff xx =
+  case (ff, xx) of
+    (Errs e1, Errs e2) -> Errs (e1 <> e2)
+    (Errs e, _) -> Errs e
+    (_, Errs e) -> Errs e
 
-Errors e1 <*> Errors e2 =
-  Errors (e1 <> e2)
+    (Run rf, Run rx) -> Run (rf <*> rx)
 
-Errors e <*> _ =
-  Errors e
+    (Bind q k, Bind p h) ->
+      Bind (pair q p) $ \(x, y) ->
+        apHxl (k x) (h y)
 
-_ <*> Errors e =
-  Errors e
+    (Bind q k, y) ->
+      Bind (pair q y) $ \(x, a) ->
+        apHxl (k x) (pure a)
+
+    (x, Bind q k) ->
+      Bind (pair x q) $ \(f, y) ->
+        apHxl (pure f) (k y)
+
+pair :: Hxl f a -> Hxl f b -> Hxl f (a, b)
+pair q p = (,) <$> q <*> p
 ```
 
-The cases involving `Bind` account for alignment. When both sides are monadic,
-their heads are aligned and their continuations are combined afterwards:
-
-```haskell
-Bind q k <*> Bind p h =
-  Bind ((,) <$> q <*> p) $ \(x, y) ->
-    k x <*> h y
-```
-
-When only one side is monadic, the other side is moved into the head. This is
-what lets a pure or already-visible branch advance to its next frontier while
-retaining the continuation on the other side:
-
-```haskell
-Bind q k <*> y =
-  Bind ((,) <$> q <*> y) $ \(x, a) ->
-    k x <*> Pure a
-
-x <*> Bind q k =
-  Bind ((,) <$> x <*> q) $ \(f, y) ->
-    Pure f <*> k y
-```
-
-These equations are schematic. Additional engineering cases are omitted here.
+The `Bind` cases account for alignment. When both sides are monadic, their
+heads are aligned and their continuations are combined afterwards. When only
+one side is monadic, the other side is moved into the head and reintroduced as
+`pure` inside the continuation. This is the hole.
 
 ## Spines and Trees
 
@@ -278,20 +275,30 @@ data Step f a
   | Failed [Raised]
 ```
 
-The relevant rule is ordinary monadic normalization:
+The evaluator walks through binds until it reaches a request frontier or an
+unhandled error:
 
 ```haskell
-step (Bind (Pure a) k) = step (k a)
+step :: Hxl f a -> Step f a
+step query =
+  case query of
+    Run r ->
+      case doneRequests r of
+        Just a  -> Done a
+        Nothing -> Blocked r pure
+
+    Errs es -> Failed es
+
+    Bind q k ->
+      case step q of
+        Done a -> step (k a)
+        Failed es -> Failed es
+        Blocked r resume -> Blocked r (\x -> Bind (resume x) k)
 ```
 
-Pure branches can move forward until they reach their next request. Blocked
-branches retain their continuations. Applicative composition combines visible
-blocked frontiers:
-
-```haskell
-Blocked r1 k1 <*> Blocked r2 k2
-  = Blocked ((,) <$> r1 <*> r2) (\(x, y) -> k1 x <*> k2 y)
-```
+Here `doneRequests` recognizes request frontiers with no request leaves. Pure
+request frontiers can therefore move forward until they reach their next
+request. Blocked branches retain their continuations.
 
 Running a query is then a loop:
 
@@ -315,43 +322,52 @@ data Tag e
 data Raised = forall e. Raised (Tag e) e
 ```
 
-A channel allocates a tag and passes a capability into the program:
+A channel allocates a tag and passes a capability into the program. The
+capability can be given an ST-style phantom token, so that it is scoped without
+adding an error parameter to `Hxl`:
 
 ```haskell
-data Raise f e = Raise
+newtype Raise s f e = Raise
   { raise :: forall a. e -> Hxl f a
   }
 
-channel :: Semigroup e => (Raise f e -> Hxl f a) -> Hxl f (Either e a)
+channel
+  :: Semigroup e
+  => (forall s. Raise s f e -> Hxl f a)
+  -> Hxl f (Either e a)
 ```
+
+The token `s` is not inspected. It only prevents the capability from escaping
+the dynamic scope of `channel`; each channel receives a fresh type-level token.
+The query type remains `Hxl f a`.
 
 Conceptually:
 
 ```haskell
 channel body =
   let tag = freshTag
-      r   = Raise (\e -> Errors [Raised tag e])
+      r   = Raise (\e -> Errs [Raised tag e])
   in handle tag (body r)
 ```
 
 The handler is a tree transformation:
 
 ```haskell
-handle tag (Pure a) =
-  Pure (Right a)
+handle :: Semigroup e => Tag e -> Hxl f a -> Hxl f (Either e a)
+handle tag query =
+  case query of
+    Run r ->
+      Run (Right <$> r)
 
-handle tag (Errors es) =
-  case select tag es of
-    [] -> Errors es
-    xs -> Pure (Left (sconcat xs))
+    Errs es ->
+      case select tag es of
+        [] -> Errs es
+        xs -> pure (Left (sconcat xs))
 
-handle tag (Fetch r) =
-  Fetch (fmap Right r)
-
-handle tag (Bind q k) =
-  Bind (handle tag q) $ \case
-    Left e  -> Pure (Left e)
-    Right a -> handle tag (k a)
+    Bind q k ->
+      Bind (handle tag q) $ \case
+        Left e  -> pure (Left e)
+        Right a -> handle tag (k a)
 ```
 
 The operation `raise` does not throw and does not fail the underlying effect
@@ -368,7 +384,7 @@ surrounding program observes the result.
 Suppose:
 
 ```haskell
-f :: x -> Raise io e -> Hxl io a
+f :: forall s. x -> Raise s io e -> Hxl io a
 ```
 
 The caller chooses the error scope by placing the delimiter.
@@ -463,7 +479,10 @@ Hxl f a
 The error type appears only where a channel is opened:
 
 ```haskell
-channel :: Semigroup e => (Raise f e -> Hxl f a) -> Hxl f (Either e a)
+channel
+  :: Semigroup e
+  => (forall s. Raise s f e -> Hxl f a)
+  -> Hxl f (Either e a)
 ```
 
 Thus typed errors are local capabilities rather than a global parameter of the

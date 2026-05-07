@@ -1,0 +1,10 @@
+name = "hxl-formal"
+version = "0.1.0"
+defaultTargets = ["HxlFormal"]
+
+[[lean_lib]]
+name = "HxlFormal"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
