@@ -377,6 +377,74 @@ the traversal one shared channel. The query type remains `Hxl m a` inside
 The delimiter changes which raises are handled together. Request grouping is
 still determined by the query syntax.
 
+## Example: Quote Construction
+
+Consider a batch of quote requests. Each quote has mandatory data, optional
+subroutines, and domain errors:
+
+```haskell
+quote :: forall s. QuoteReq -> Raise s m QuoteError -> Hxl m Quote
+quote req r = do
+  customer <- getCustomer req.customerId
+  when (suspended customer) $
+    raise r (SuspendedCustomer customer.id)
+
+  lines <- traverse (priceLine r customer) req.lines
+
+  coupon <- case req.couponCode of
+    Nothing   -> pure Nothing
+    Just code -> Just <$> validateCoupon r customer code
+
+  shipping <- case req.shippingAddress of
+    Nothing      -> pure Nothing
+    Just address -> Just <$> quoteShipping r lines address
+
+  policy <- getMerchantPolicy req.merchantId
+  pure (assembleQuote customer lines coupon shipping policy)
+```
+
+The subroutines contain their own optional fetches:
+
+```haskell
+priceLine r customer line = do
+  sku <- getSku line.sku
+
+  components <-
+    if isBundle sku
+      then getBundleComponents sku.id >>= traverse getSku
+      else pure []
+
+  price <- getPrice customer.priceList sku.id
+  when (isNothing price) $
+    raise r (MissingPrice sku.id)
+
+  stock <-
+    if line.reserve
+      then Just <$> getStock sku.id
+      else pure Nothing
+
+  pure (PricedLine sku components price stock)
+```
+
+A traversed workload contains many such trees. Some quotes have coupons, some
+have shipping, some lines are bundles, and some lines reserve stock. A linear
+spine can lose alignment after any missing optional segment. The bind tree
+keeps holes at those points, so later requests such as `getMerchantPolicy` or
+`getStock` are still reached in their proper order.
+
+The same quote program supports either error scope:
+
+```haskell
+traverse (\req -> channel (\r -> quote req r)) reqs
+-- Hxl m [Either QuoteError Quote]
+
+channel (\r -> traverse (\req -> quote req r) reqs)
+-- Hxl m (Either QuoteError [Quote])
+```
+
+The first form reports per-quote domain errors. The second form accumulates
+domain errors for the whole batch.
+
 ## Relation to Haxl
 
 Haxl introduced the central idea that monadic data-fetching programs can be
