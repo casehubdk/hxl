@@ -40,40 +40,39 @@ import cats.implicits._
  * ```
  */
 trait DataSource[F[_], K, V] {
-  type K2
-
   def key: DSKey[K, V]
 
   // If we don't care about the output, we can optimize the batch since
   // we don't need to gather the results
   def optimization: Option[Unit <:< V]
 
-  def k2(k: K): K2
-
-  def batch(ks: NonEmptyList[K]): F[Map[K2, V]]
+  def batch(ks: NonEmptyList[K]): F[collection.Map[K, V]]
 
   def mapK[G[_]](fk: F ~> G): DataSource[G, K, V] =
-    DataSource.full[G, K, K2, V](key)(k2)(ks => fk(batch(ks)))(optimization)
+    DataSource.full[G, K, V](key)(ks => fk(batch(ks)))(optimization)
 }
 
 object DataSource {
-  def full[F[_], K, K2, V](key: DSKey[K, V])(k2: K => K2)(f: NonEmptyList[K] => F[Map[K2, V]])(optimization: Option[Unit <:< V]) = {
+  def full[F[_], K, V](key: DSKey[K, V])(f: NonEmptyList[K] => F[collection.Map[K, V]])(optimization: Option[Unit <:< V]) = {
     val key0 = key
     val opt = optimization
-    val k20 = k2
-    type K20 = K2
     new DataSource[F, K, V] {
-      type K2 = K20
       def key = key0
-      def k2(k: K) = k20(k)
       def optimization: Option[Unit <:< V] = opt
       def batch(ks: NonEmptyList[K]) = f(ks)
     }
   }
 
-  def from[F[_], K, V](key: DSKey[K, V])(f: NonEmptyList[K] => F[Map[K, V]]): DataSource[F, K, V] =
-    full(key)(identity)(f)(None)
+  final class PartiallyAppliedIt[F[_], K, V](key: DSKey[K, V]) {
+    def apply[Container <: IterableOnce[(K, V)]](
+      f: NonEmptyList[K] => F[Container]
+    )(implicit F: Functor[F]): DataSource[F, K, V] =
+      full(key)(f.andThen(_.map(xs => scala.collection.mutable.Map.from(xs): collection.Map[K, V])))(None)
+  }
+
+  def from[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedIt[F, K, V] =
+    new PartiallyAppliedIt(key)
 
   def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: NonEmptyList[K] => F[Unit]): DataSource[F, K, Unit] =
-    DataSource.full(key)(identity)(ks => f(ks).as(Map.empty[K, Unit]))(Some(implicitly))
+    DataSource.full(key)(ks => f(ks).as(Map.empty[K, Unit]: collection.Map[K, Unit]))(Some(implicitly))
 }

@@ -29,7 +29,7 @@ package object `natchez` {
       val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
         // .traverse will use monad's applicative to derive hxl applicative
         implicit val par: Parallel[Hxl[F, *]] = hxl.instances.parallel.parallelForHxl[F]
-        val h = keys.toList.parTraverse(k => k.fa.map(a => (k, a))).map(_.toMap)
+        val h = keys.toList.parTraverse(k => k.fa.map(a => (k, a)))
         Trace[F].span(s"subbatch-hxl-$name") {
           TracedRunner.runPar(h)
         }
@@ -62,18 +62,15 @@ object NatchezInternal {
 
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
-      DataSource.full[F, K, source.K2, V](source.key)(source.k2) { ks =>
+      DataSource.full[F, K, V](source.key) { ks =>
         Trace[F].span(s"datasource.${source.key}") {
           Trace[F].put("keys" -> ks.size) *> source.batch(ks)
         }
       }(source.optimization)
 
-    req.visit {
-      new Requests.DataSourceVisitor[F] {
-        def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K) =
-          (traceSource(source), k)
-      }
-    }
+    req.copy(
+      requests = req.requests.map { case (ds, k) => (traceSource(ds), k) }
+    )
   }
 
   def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](

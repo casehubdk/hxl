@@ -172,12 +172,12 @@ object Hxl {
 
   def apply[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Option[V]] =
     source.optimization match {
-      case Some(ev) => Run[F, Option[V]](Requests.empty(source, k, Some(ev(()))))
-      case None     => Run[F, Option[V]](Requests.lift(source, k))
+      case Some(ev) => Run[F, Option[V]](Requests.fetch(source, k).as(Some(ev(()))))
+      case None     => Run[F, Option[V]](Requests.fetch(source, k))
     }
 
   def discard[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Unit] =
-    Run[F, Unit](Requests.discard(source, k))
+    Run[F, Unit](Requests.fetch(source, k).void)
 
   def force[F[_], K: Show, V](k: K, source: DataSource[F, K, V])(implicit F: ApplicativeThrow[F]): Hxl[F, V] =
     apply[F, K, V](k, source)
@@ -258,6 +258,13 @@ object Hxl {
       def pure[A](x: A): H[A] = Done(x)
       def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] = {
         ap_(0, ff, fa)
+      }
+      override def map[A, B](fa: H[A])(f: A => B): H[B] = fa match {
+        case LiftF(fa) => LiftF(fa.map(a => map(a)(f)))
+        case Done(a)   => Done(f(a))
+        case Run(requests) => Run(requests.map(f))
+        case Errs(raiseds) => Errs(raiseds)
+        case other     => super.map(other)(f)
       }
     }
   }

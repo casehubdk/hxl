@@ -27,7 +27,7 @@ final case class FailingKey(key: String) extends DSKey[String, String]
 class HxlEvaluationTest extends FunSuite {
   case object SimpleKey extends DSKey[String, String]
   def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey) { ks =>
-    F.pure(ks.toList.map(s => s -> s).toMap)
+    F.pure(ks.toList.map(s => s -> s))
   }
 
   test("should be able to construct and evaluate a hxl in Id") {
@@ -44,7 +44,7 @@ class HxlEvaluationTest extends FunSuite {
 
   case object SimpleKey2 extends DSKey[String, String]
   def simpleDataSource2[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey2) { ks =>
-    F.pure(ks.toList.map(s => s -> s).toMap)
+    F.pure(ks.toList.map(s => s -> s))
   }
 
   test(s"should be able to mix two different data sources together") {
