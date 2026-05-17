@@ -1,4 +1,4 @@
-# A Small Pearl for Batched Queries
+# A Small Algebra for Batched Conditional Queries
 
 ## Abstract
 
@@ -9,16 +9,18 @@ one order at a time.
 
 The interpreter sees a different problem. It wants to batch all visible
 requests: customers with customers, coupons with coupons, coupon discounts with
-coupon discounts. Optional work makes this hard. A
-customer with a coupon has a nested discount program; a customer without a
-coupon has a hole in the same place. A flattened view of each program can shift
-later requests into the wrong position.
+coupon discounts. Optional work makes this hard. A customer with a coupon has a
+nested discount program; a customer without a coupon has a hole in the same
+place. If the computation is treated as a flat sequence of phases, later
+requests can be shifted into the wrong position.
 
-This note presents the small idea behind Hxl: keep the computation as a bind
-tree, and make applicative composition merge those trees recursively. Holes are
-kept at the points where a branch did no work, so later requests keep their
-relative position. Domain errors are represented in the same syntax and handled
-by local delimiters.
+This note presents a small algebra for batched conditional programs in the
+Haxl style. The syntax has request frontiers, dependent binds, and raised domain
+errors. Applicative composition is the merge operation for this syntax: it
+combines visible frontiers and follows existing binds. Holes are preserved where
+a branch did no work, so later requests keep their relative position. Error
+delimiters use the same syntax to choose between partial completion and
+whole-batch failure.
 
 ## The Checkout Program
 
@@ -35,66 +37,106 @@ getQuote productId customerId = do
   assembleQuote customer productId discount
 ```
 
-The program has two paths, one for `Just` of a coupon and one for `Nothing`.
-In the case of a coupon, the program's batchable functions can be written as
+There are two paths. If the customer has a coupon, the batchable work has this
+shape:
+
 ```text
 p_1 = getCustomer -> (getCoupon -> queryCouponDiscount) -> assembleQuote
 ```
-conversely, the `Nothing` case as
+
+If the customer has no coupon, the nested discount program does no work:
 
 ```text
 p_2 = getCustomer -> () -> assembleQuote
 ```
-which can be simplified to
+
+It is tempting to erase the unit and write the second program as:
+
 ```text
 p_2' = getCustomer -> assembleQuote
 ```
 
+That loses information. The absence of discount work is not the same as the
+absence of a position in the computation. It is a hole inside the same branch
+where the coupon program would have run.
+
 ## Spines and Trees
-A scheduler for monad programs cannot inspect the program further than the next request.
-This means that we cannot determine any information about the structure of the program beyond the next request.
-Haxl solves this issue by assuming that the best option is to evaluate all ready requests immidiately.
-Haxl represents programs as structures akin to cons nil lists, a spine of batch requests
+
+A scheduler for monadic programs cannot inspect past the next dependent
+request. Once a request has returned, the continuation may reveal more work.
+This is the reason to run all currently visible independent requests together,
+resume their continuations, and repeat.
+
+If each program is flattened into a spine of request phases, the two checkout
+paths above appear to have different lengths:
+
 ```text
 p_1 = getCustomer -> (getCoupon -> (queryCouponDiscount -> assembleQuote))
-```
-Haxl merges spines by zipping the programs, keeping the longest spine, and merging the batch requests at each step.
-```text
-p_1 +_spine p_2 = 
-{getCustomer} -> {getCoupon, assembleQuote} -> ({queryCouponDiscount} -> {assembleQuote}))
-```
-Such an approach creates a plan which is not optimal. Since $p_2 \subset p_1$, then the optimal plan should be exactly $p_1$.
-Even if we consider the explicit mention of the unit case, the issue remains
-```text
-p_1 +_spine p_2 =
-{getCustomer} -> ({getCoupon, ()} -> ({queryCouponDiscount, assembleQuote} -> {assembleQuote}))
+p_2' = getCustomer -> assembleQuote
 ```
 
-One novelty is to simply not remove the parentheses, as such, create a tree instead of a spine.
+Zipping such spines gives a bad alignment:
+
 ```text
-p_1 +_tree p_2 =
-                              >>= (a)
-                             /   \
-                {getCustomer}    >>= (b)
-                                /   \
-                            >>= (c)  {assembleQuote}
-                           /   \         
-      {getCoupon}              {queryCouponDiscount}     
-+_tree
-                              >>= (a)
-                             /   \
-                {getCustomer}    >>= (b)
-                                /   \
-                             () (c)  {assembleQuote}
-=
-                              >>= (a)
-                             /   \
-                {getCustomer}    >>= (b)
-                                /   \
-                            >>= (c)  {assembleQuote}
-                           /   \         
-      {getCoupon}              {queryCouponDiscount}     
+p_1 +_spine p_2'
+  = {getCustomer}
+ -> {getCoupon, assembleQuote}
+ -> {queryCouponDiscount}
+ -> {assembleQuote}
 ```
+
+The second quote's `assembleQuote` has moved into the coupon phase of the first
+quote. The problem is not the batching of ready requests; it is the loss of the
+program shape that says where the skipped work was skipped.
+
+Even if the skipped branch is written explicitly, flattening still loses the
+information that the unit belongs inside the discount branch:
+
+```text
+p_2 = getCustomer -> (() -> assembleQuote)
+```
+
+The algebra keeps the parentheses. The programs are trees rather than spines:
+
+```text
+p_1:
+
+                              >>= (a)
+                             /   \
+              {getCustomer_1}     >>= (b)
+                                  /   \
+                              >>= (c)  {assembleQuote_1}
+                             /   \
+                 {getCoupon_1}   {queryCouponDiscount_1}
+
+p_2:
+
+                              >>= (a)
+                             /   \
+              {getCustomer_2}     >>= (b)
+                                  /   \
+                                ()    {assembleQuote_2}
+```
+
+Their merge aligns the common tree structure and preserves the hole where the
+second program did no discount work:
+
+```text
+p_1 +_tree p_2:
+
+                              >>= (a)
+                             /   \
+           {getCustomer_{1,2}}    >>= (b)
+                                  /   \
+                              >>= (c)  {assembleQuote_{1,2}}
+                             /   \
+                 {getCoupon_1}   {queryCouponDiscount_1}
+```
+
+The hole is not a request frontier and it is not a later phase. It is simply the
+place where one branch has no work. Because that place is preserved, the later
+`assembleQuote` requests remain aligned with each other instead of being pulled
+into the coupon frontier.
 
 ## Requests as Frontiers
 
@@ -120,23 +162,14 @@ type Requests f = Ap (Request f)
 ```
 
 The applicative structure records how to rebuild the result after all leaves
-have returned:
-
-```haskell
-getCustomer          :: CustomerId -> Hxl f Customer
-getCoupon            :: CouponId -> Hxl f Coupon
-queryCouponDiscount :: Coupon -> ProductId -> Hxl f Discount
-assembleQuote       :: Customer -> ProductId -> Maybe Discount -> Hxl f Quote
-```
-
-When two independent frontiers are visible, they combine:
+have returned. For example:
 
 ```haskell
 (,) <$> getCustomer c1 <*> getCustomer c2
 ```
 
-The interpreter can collect both customer keys, call the customer data source
-once, and rebuild the pair.
+exposes two customer requests in one frontier. The interpreter can collect both
+keys, call the customer data source once, and rebuild the pair.
 
 ## Queries as Trees
 
@@ -149,9 +182,8 @@ data Hxl f a where
   Errs :: [Raised] -> Hxl f a
 ```
 
-`Run` contains the next batchable request frontier. `Bind` is ordinary
-dependent sequencing. `Errs` contains raised domain errors that have not yet
-been handled.
+`Run` contains the next batchable request frontier. `Bind` records dependent
+sequencing. `Errs` contains raised domain errors that have not yet been handled.
 
 Pure values are pure request frontiers:
 
@@ -169,41 +201,55 @@ bindHxl = Bind
 
 ## Applicative Merge
 
-The applicative operation is the pearl. It does not concatenate spines. It
-aligns tree heads and recurses into continuations.
-
-The following is close to the whole definition; production code still needs the
-usual stack-safety and effect translation cases.
+Applicative composition is the merge for the query syntax. It is defined by the
+outer constructors of the two computations. Two visible frontiers combine as
+applicatives. Errors combine or propagate. A bind is followed by merging the
+subprograms exposed by its continuation.
 
 ```haskell
 instance Applicative (Hxl f) where
   pure = Run . pure
   (<*>) = apHxl
 
+pair :: Hxl f a -> Hxl f b -> Hxl f (a, b)
+pair = liftA2 (,)
+
 apHxl :: Hxl f (a -> b) -> Hxl f a -> Hxl f b
 apHxl ff xx =
   case (ff, xx) of
-    (Errs e1, Errs e2) -> Errs (e1 <> e2)
-    (Errs e, _) -> Errs e
-    (_, Errs e) -> Errs e
+    (Errs e1, Errs e2) ->
+      Errs (e1 <> e2)
 
-    (Run rf, Run rx) -> Run (rf <*> rx)
+    (Errs e, _) ->
+      Errs e
+
+    (_, Errs e) ->
+      Errs e
+
+    (Run rf, Run rx) ->
+      Run (rf <*> rx)
 
     (Bind q k, Bind p h) ->
       Bind (pair q p) $ \(x, y) ->
         apHxl (k x) (h y)
 
-    (Bind q k, y) ->
-      Bind (pair q y) $ \(x, a) ->
-        apHxl (k x) (pure a)
+    (Bind q k, p) ->
+      Bind q $ \x ->
+        apHxl (k x) p
 
-    (x, Bind q k) ->
-      Bind (pair x q) $ \(f, y) ->
-        apHxl (pure f) (k y)
-
-pair :: Hxl f a -> Hxl f b -> Hxl f (a, b)
-pair q p = (,) <$> q <*> p
+    (q, Bind p h) ->
+      Bind p $ \y ->
+        apHxl q (h y)
 ```
+
+There is no preliminary conversion to a list of phases. The merge is defined on
+the syntax itself. A `Run`/`Run` pair is where batching happens. A `Bind` case
+preserves the sequencing already present on one or both sides and resumes the
+merge underneath it.
+
+For conditional programs, a skipped branch is not deleted and then reconstructed
+later. It remains represented by ordinary pure frontier structure, and the merge
+continues at the corresponding position in the tree.
 
 ## Frontier Evaluation
 
@@ -240,11 +286,11 @@ step query =
           Failed es
 
         Blocked requests resume ->
-          Blocked requests \x ->
+          Blocked requests $ \x ->
             Bind (resume x) k
 ```
 
-The runner is then just a loop:
+The runner is a loop:
 
 ```haskell
 run :: Monad f => Hxl f a -> f a
@@ -260,8 +306,8 @@ run query =
       runRequests requests >>= run . resume
 ```
 
-This operational story matches the checkout intuition: find all currently
-visible requests, run them in batches, resume the suspended programs, and repeat.
+Operationally, this says: find the currently visible request frontier, batch it,
+resume the suspended programs, and repeat.
 
 ## Errors as Syntax
 
@@ -273,7 +319,7 @@ when (expired coupon) $
 ```
 
 This should not be an exception in the underlying effect. It is part of the
-query. A raised error stores a fresh tag and a value:
+query syntax. A raised error stores a fresh tag and a value:
 
 ```haskell
 data Tag s e
@@ -336,11 +382,11 @@ handle tag query =
 ```
 
 The handler preserves request frontiers. Local errors become `Left`. Foreign
-errors stay unhandled for an outer channel.
+errors remain unhandled for an outer channel.
 
 ## Delimiter Placement
 
-A quote program that receives a raising capability supports two useful policies:
+A quote program that receives a raising capability admits two placements for the delimiter:
 
 ```haskell
 quote :: forall s. Raise s f QuoteError -> QuoteReq -> Hxl f Quote
@@ -353,7 +399,7 @@ traverse (\req -> channel (\raise -> quote raise req)) reqs
 -- Hxl f [Either QuoteError Quote]
 ```
 
-One bad quote becomes one `Left`; other quotes can still return `Right`.
+One bad quote becomes one `Left`; other quotes may still return `Right`.
 
 Whole-batch handling:
 
@@ -367,72 +413,6 @@ the whole traversal succeeded.
 
 Only the delimiter moved. Request batching is still governed by the bind tree.
 The error type appears at the boundary, not throughout the query type.
-
-## The Small Set of Equations
-
-A channel catches its own raise:
-
-```haskell
-channel (\r -> raise r e)
-  = pure (Left e)
-```
-
-A channel wraps success:
-
-```haskell
-channel (\_ -> pure a)
-  = pure (Right a)
-```
-
-Independent raises accumulate:
-
-```haskell
-channel (\r -> (,) <$> raise r e1 <*> raise r e2)
-  = pure (Left (e1 <> e2))
-```
-
-Moving the delimiter changes error scope:
-
-```haskell
-traverse (\x -> channel (\raise -> f x raise)) xs
-  :: Hxl f [Either e a]
-
-channel (\raise -> traverse (\x -> f x raise) xs)
-  :: Hxl f (Either e [a])
-```
-
-The batching idea is orthogonal: frontier discovery follows `Run` and `Bind`;
-error handling follows `Errs` and delimiters.
-
-## What Hxl Buys
-
-The checkout program began as ordinary monadic code:
-
-```text
-getCustomer -> (getCoupon -> queryCouponDiscount) -> assembleQuote
-```
-
-The no-coupon case has a hole:
-
-```text
-getCustomer -> () -> assembleQuote
-```
-
-A flattened spine cannot tell whether a later step moved earlier or merely
-skipped optional work. Hxl keeps the bind tree:
-
-```text
-coupon:    ((getCustomer, (getCoupon, queryCouponDiscount)), assembleQuote)
-no coupon: ((getCustomer, ()),                               assembleQuote)
-```
-
-That one structural choice gives the scheduler enough information to expose
-batch frontiers without losing alignment. Delimited errors use the same syntax:
-raise nodes are ordinary query nodes, and channels are ordinary tree
-transformations.
-
-The result is small: one request frontier, one bind tree, one frontier
-evaluator, and one delimited error handler.
 
 ## References
 
