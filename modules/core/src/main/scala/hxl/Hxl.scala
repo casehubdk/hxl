@@ -114,7 +114,7 @@ object Hxl {
     def raise[A](e: E): Hxl[F, A]
   }
 
-  def channel[F[_]: Functor, E, A](over: Raise[F, E] => Hxl[F, A])(implicit sg: Semigroup[E]): Hxl[F, Either[E, A]] = {
+  def channel[F[_]: Applicative, E, A](over: Raise[F, E] => Hxl[F, A])(implicit sg: Semigroup[E]): Hxl[F, Either[E, A]] = {
     val tag = new ErrorTag[E] {}
     val exec = over(new Raise[F, E] {
       def raise[A0](e: E): Hxl[F, A0] =
@@ -131,7 +131,7 @@ object Hxl {
         case Done(a)        => Done(Right(a))
         case LiftF(unFetch) => LiftF(unFetch.map(handle))
         case andThen: AndThen[F, a, B] =>
-          handle(andThen.unsafeFa).andThen {
+          handle(andThen.safeFa).andThen {
             case Left(e)  => Done(Left(e))
             case Right(a) => handle(andThen.fb(a))
           }
@@ -209,27 +209,19 @@ object Hxl {
           case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
             AndThen[F, (a1, a2), B](
               self.tuple2(at.safeFaK(gf), ab.safeFaK(gf)),
-              { case (a1, a2) =>
-                self.ap(at.fb(a1))(ab.fb(a2))
-              }
+              { case (a1, a2) => self.ap(at.fb(a1))(ab.fb(a2)) }
             )
-
           // flatMap <*> batch -> move batch into left side of flatMap
           case (at: AndThen[F, a, A => B], fb) =>
             AndThen[F, (a, A), B](
               self.tuple2(at.safeFaK(gf), fb),
-              { case (a, a2) =>
-                self.ap(at.fb(a))(Done(a2))
-              }
+              { case (a, a2) => self.ap(at.fb(a))(Done(a2)) }
             )
           case (fa, ab: AndThen[F, a, A]) =>
             AndThen[F, (A => B, a), B](
               self.tuple2(fa, ab.safeFaK(gf)),
-              { case (f, a2) =>
-                self.ap(Done(f))(ab.fb(a2))
-              }
+              { case (f, a2) => self.ap(Done(f))(ab.fb(a2)) }
             )
-
           case (Done(f), Done(a)) => Done(f(a))
           case (r1: Run[F, A => B], r2: Run[F, A]) =>
             self.map(Run((r1.requests, r2.requests).tupled)) { case (f, a) => f(a) }

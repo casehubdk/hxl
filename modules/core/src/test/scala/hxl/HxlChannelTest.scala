@@ -112,4 +112,25 @@ class HxlChannelTest extends FunSuite {
 
     assertEquals(Hxl.runSequential[Id, String](program), "recovered:boom")
   }
+
+  test("channel preserves liftF shape") {
+    val program = Hxl.channel[Eval, Errors, Int] { _ =>
+      Hxl.embedF(Eval.now(Hxl.pure[Eval, Int](1)))
+    }
+
+    assert(program.isInstanceOf[Hxl.LiftF[Eval, Either[Errors, Int]]])
+    assertEquals(Hxl.runSequential(program).value, Right(1))
+  }
+
+  test("channel handles deep bind chains stack safely") {
+    val program = Hxl.channel[Eval, Errors, Int] { raise =>
+      (0 until 10000)
+        .foldLeft(Hxl.pure[Eval, Int](0)) { (acc, _) =>
+          acc.andThen(i => Hxl.pure[Eval, Int](i + 1))
+        }
+        .andThen(_ => raise.raise[Int](errors("boom")))
+    }
+
+    assertEquals(Hxl.runSequential(program).value, Left(errors("boom")))
+  }
 }

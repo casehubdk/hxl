@@ -130,6 +130,44 @@ class HxlEvaluationTest extends FunSuite {
     assertEquals(Hxl.runSequential(Hxl.sequence(Array(left, right))).toList, List("2", "ab"))
   }
 
+  test("Hxl.traverse handles empty and singleton arrays") {
+    var ran = false
+    val empty = Hxl.traverse(Array.empty[Int]) { i =>
+      ran = true
+      Hxl.pure[Id, Int](i)
+    }
+    val single = Hxl.traverse(Array(1))(i => Hxl.pure[Id, Int](i + 1))
+
+    assertEquals(Hxl.runSequential(empty).toList, Nil)
+    assert(!ran)
+    assertEquals(Hxl.runSequential(single).toList, List(2))
+  }
+
+  test("Hxl.traverse preserves array order") {
+    val result = Hxl.runSequential(Hxl.traverse(Array("c", "a", "b"))(Hxl(_, simpleDataSource[Id])))
+    assertEquals(result.toList, List(Some("c"), Some("a"), Some("b")))
+  }
+
+  test("Applicative.ap composes andThen with run directly") {
+    type Effect[A] = StateT[Id, Vector[List[String]], A]
+    object ApKey extends DSKey[String, String]
+    val ds = DataSource.from[Effect, String, String](ApKey) { keys =>
+      StateT[Id, Vector[List[String]], Map[String, String]] { log =>
+        (log :+ keys.toList, keys.toList.map(k => k -> k).toMap)
+      }
+    }
+    val ff = Hxl.pure[Effect, String]("foo").andThen { key =>
+      Hxl(key, ds).map { prefix => (value: Option[String]) =>
+        s"${prefix.getOrElse("missing")}:${value.getOrElse("missing")}"
+      }
+    }
+    val fa = Hxl("bar", ds)
+
+    val result = Hxl.runSequential(Applicative[Hxl[Effect, *]].ap(ff)(fa)).run(Vector.empty)
+
+    assertEquals(result, (Vector(List("bar"), List("foo")), "foo:bar"))
+  }
+
   test("deep applicative composition of binds is stack safe") {
     val values = (0 until 10000).toList
     def node(i: Int): Hxl[Id, Int] =
