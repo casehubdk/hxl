@@ -20,6 +20,7 @@ import cats._
 import cats.arrow._
 import cats.implicits._
 import cats.data.*
+import scala.collection.immutable.ArraySeq
 
 /*
  * Hxl is a value that that represents a computation that may be batched.
@@ -29,6 +30,8 @@ import cats.data.*
 sealed trait Hxl[F[_], A] {
   def andThen[B](f: A => Hxl[F, B]): Hxl[F, B] =
     Hxl.AndThen(this, f)
+
+  private[hxl] def depth: Int
 
   def flatMapF[B](f: A => F[B])(implicit F: Functor[F]): Hxl[F, B] =
     andThen(a => Hxl.liftF(f(a)))
@@ -44,14 +47,6 @@ sealed trait Hxl[F[_], A] {
     this.tailRecM(full(_))
   }
 
-  // runs up to the first batch and optimizes it
-  //
-  // note this will not run any faster than running the batch
-  // but it allows doing some upfront work now
-  //
-  // any further composition may destroy the optimized hxl
-  def optimized(implicit F: Monad[F]): Either[Hxl[F, A], F[Hxl[F, A]]]
-
   // Aligns this hxl, this is a hint for future composition that
   // def align: Hxl[F, A] = Hxl.align(this)
 
@@ -59,6 +54,8 @@ sealed trait Hxl[F[_], A] {
 }
 
 object Hxl {
+  private val StackSafeDepth = 32
+
   type Target[F[_], G[_], A] = G[Either[Hxl[F, A], A]]
 
   type Compiler[F[_], G[_]] = NonBind[F, *] ~> Target[F, G, *]
@@ -68,7 +65,7 @@ object Hxl {
         def apply[A](fa: Hxl[F, A]): Target[F, G, A] = fa match {
           case nb: NonBind[F, A] => compiler(nb)
           case andThen: AndThen[F, a, A] =>
-            val fb: G[Either[Hxl[F, a], a]] = G.unit *> apply(andThen.fa)
+            val fb: G[Either[Hxl[F, a], a]] = G.unit *> apply(andThen.unsafeFa)
             fb.map {
               case Left(h)  => Left(h.andThen(andThen.fb))
               case Right(a) => Left(andThen.fb(a))
@@ -77,38 +74,40 @@ object Hxl {
       }
   }
 
-  sealed trait NonBind[F[_], A] extends Hxl[F, A]
+  sealed trait NonBind[F[_], A] extends Hxl[F, A] {
+    private[hxl] final def depth: Int = 0
+  }
 
   // Almost a free monad
   final case class Done[F[_], A](value: A) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Done(value)
-    def optimized(implicit F: Monad[F]) = Left(this)
   }
   final case class Run[F[_], A](requests: Requests[F, A]) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Run(requests.mapK(fk))
-    def optimized(implicit F: Monad[F]) = Left(Run(requests.optimized))
   }
   final case class LiftF[F[_], A](unFetch: F[Hxl[F, A]]) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] =
       LiftF(fk(unFetch).map(_.mapK(fk)))
-    def optimized(implicit F: Monad[F]) =
-      unFetch.flatMap(_.optimized.leftMap(F.pure(_)).merge).asRight
   }
-  final case class AndThen[F[_], A, B](fa: Hxl[F, A], fb: A => Hxl[F, B]) extends Hxl[F, B] {
-    override def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] =
-      AndThen(fa.mapK(fk), (a: A) => fb(a).mapK(fk))
+  final case class AndThen[F[_], A, B](unsafeFa: Hxl[F, A], fb: A => Hxl[F, B]) extends Hxl[F, B] {
+    private[hxl] val depth: Int =
+      if (unsafeFa.depth > StackSafeDepth) unsafeFa.depth else unsafeFa.depth + 1
 
-    override def optimized(implicit F: Monad[F]): Either[Hxl[F, B], F[Hxl[F, B]]] =
-      fa.optimized match {
-        case Left(h)   => Left(AndThen(h, fb))
-        case Right(fh) => Right(fh.map(h => AndThen(h, fb)))
-      }
+    def safeFa(implicit F: Applicative[F]): Hxl[F, A] =
+      if (unsafeFa.depth > StackSafeDepth) LiftF(F.unit.as(unsafeFa))
+      else unsafeFa
+
+    def safeFaK[G[_]](fk: G ~> F)(implicit G: Applicative[G]): Hxl[F, A] =
+      if (unsafeFa.depth > StackSafeDepth) LiftF(fk(G.unit.as(unsafeFa)))
+      else unsafeFa
+
+    override def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, B] =
+      AndThen(unsafeFa.mapK(fk), (a: A) => fb(a).mapK(fk))
   }
   trait ErrorTag[E]
   final case class Raised[E](tag: ErrorTag[E], error: E)
   final case class Errs[F[_], A](raiseds: NonEmptyChain[Raised[?]]) extends NonBind[F, A] {
     def mapK[G[_]: Functor](fk: F ~> G): Hxl[G, A] = Errs(raiseds)
-    def optimized(implicit F: Monad[F]) = Left(this)
   }
 
   trait Raise[F[_], E] {
@@ -126,14 +125,14 @@ object Hxl {
         case Errs(raiseds) =>
           val matching = raiseds.filter(_.tag == tag).map(_.error.asInstanceOf[E])
           NonEmptyChain.fromChain(matching) match {
-            case None => Errs(raiseds)
+            case None     => Errs(raiseds)
             case Some(es) => Done(Left(es.reduce))
           }
-        case Done(a) => Done(Right(a))
+        case Done(a)        => Done(Right(a))
         case LiftF(unFetch) => LiftF(unFetch.map(handle))
-        case andThen: AndThen[F, a, B] => 
-          handle(andThen.fa).andThen {
-            case Left(e) => Done(Left(e))
+        case andThen: AndThen[F, a, B] =>
+          handle(andThen.unsafeFa).andThen {
+            case Left(e)  => Done(Left(e))
             case Right(a) => handle(andThen.fb(a))
           }
         case run: Run[F, B] => Run(run.requests.map(Right(_)))
@@ -149,7 +148,7 @@ object Hxl {
           case Done(a)        => M.pure(Right(a))
           case LiftF(unFetch) => unFetch.map(Left(_))
           case run: Run[F, A] => Requests.run[F, A](run.requests).map(Right(_))
-          case Errs(_) => throw new RuntimeException("Unhandled error")
+          case Errs(_)        => throw new RuntimeException("Unhandled error")
         }
       }
   }
@@ -171,10 +170,7 @@ object Hxl {
   def pure[F[_], A](a: A): Hxl[F, A] = Done(a)
 
   def apply[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Option[V]] =
-    source.optimization match {
-      case Some(ev) => Run[F, Option[V]](Requests.fetch(source, k).as(Some(ev(()))))
-      case None     => Run[F, Option[V]](Requests.fetch(source, k))
-    }
+    Run[F, Option[V]](Requests.fetch(source, k))
 
   def discard[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Unit] =
     Run[F, Unit](Requests.fetch(source, k).void)
@@ -183,7 +179,13 @@ object Hxl {
     apply[F, K, V](k, source)
       .flatMapF(F.fromOption(_, new RuntimeException(show"Key $k not found")))
 
-  // def align[F[_], A](fa: Hxl[F, A]): Hxl[F, A] = Align(fa)
+  def fmap[F[_]: Functor, A, B](fa: Hxl[F, A])(f: A => B): Hxl[F, B] = fa match {
+    case LiftF(fa)                 => LiftF(fa.map(a => fmap(a)(f)))
+    case Done(a)                   => Done(f(a))
+    case Run(requests)             => Run(requests.map(f))
+    case Errs(raiseds)             => Errs(raiseds)
+    case andThen: AndThen[F, a, A] => AndThen(andThen.unsafeFa, (a: a) => fmap(andThen.fb(a))(f))
+  }
 
   // Almost the same signature as parallel, except we don't have a monad, but a functor instead
   // This is because of the free monad structure of Hxl, we can defer Monad evidence until we need to run
@@ -193,81 +195,63 @@ object Hxl {
   ): Applicative[Hxl[F, *]] = {
     type H[A] = Hxl[F, A]
 
-    def ap_[A, B](n: Int, ff: H[A => B], fa: H[A]): H[B] = {
-      def pseudoApply(n1: Int): Apply[H] = new Apply[H] {
-        def map[A0, B0](fa: H[A0])(f: A0 => B0): H[B0] =
-          fa match {
-            case LiftF(fa) => LiftF(fa.map(a => pseudoApply(0).map(a)(f)))
-            case Done(a)   => Done(f(a))
-            case other     => ap_(n1, Done(f), other)
-          }
-        def ap[A0, B0](ff: H[A0 => B0])(fa: H[A0]): H[B0] = ap_(n1, ff, fa)
-      }
-      val reset = pseudoApply(0)
-      val forward = pseudoApply(n + 1)
-
-      val stacksafeDepth = 32
-
-      def suspendTuple2[X, Y](x: H[X], y: H[Y]): H[(X, Y)] =
-        (x, y) match {
-          case (LiftF(_), _) | (_, LiftF(_)) => reset.tuple2(x, y)
-          case _ =>
-            if (n >= stacksafeDepth) {
-              LiftF[F, (X, Y)](
-                gf(Applicative[G].unit.map(_ => reset.tuple2(x, y)))
-              )
-            } else forward.tuple2(x, y)
-        }
-
-      (ff, fa) match {
-        case (Errs(e1), Errs(e2)) => Errs(e1 ++ e2)
-        case (Errs(e), _)          => Errs(e)
-        case (_, Errs(e))          => Errs(e)
-        case (LiftF(fa), LiftF(fb)) =>
-          LiftF(gf((fg(fa), fg(fb)).mapN(reset.ap(_)(_))))
-        case (LiftF(fa), h) => LiftF(fa.map(reset.ap(_)(h)))
-        case (h, LiftF(fa)) => LiftF(fa.map(reset.ap(h)(_)))
-        case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
-          AndThen[F, (a1, a2), B](
-            suspendTuple2(at.fa, ab.fa),
-            { case (a1, a2) => reset.ap(at.fb(a1))(ab.fb(a2)) }
-          )
-
-        // flatMap <*> batch -> move batch into left side of flatMap
-        // to be optimistic. The choice is arbitrary.
-        case (at: AndThen[F, a, A => B], fb) =>
-          AndThen[F, (a, A), B](
-            suspendTuple2(at.fa, fb),
-            { case (a, a2) => reset.ap(at.fb(a))(Done(a2)) }
-          )
-        case (fa, ab: AndThen[F, a, A]) =>
-          AndThen[F, (A => B, a), B](
-            suspendTuple2(fa, ab.fa),
-            { case (f, a2) => reset.ap(Done(f))(ab.fb(a2)) }
-          )
-
-        case (Done(f), Done(a)) => Done(f(a))
-        case (r1: Run[F, A => B], r2: Run[F, A]) =>
-          reset.map(Run((r1.requests, r2.requests).tupled)) { case (f, a) => f(a) }
-        case (r: Run[F, A => B], Done(a)) => Run(r.requests.map(_(a)))
-        case (Done(f), r: Run[F, A])      => Run(r.requests.map(f(_)))
-      }
-    }
-
-    new Applicative[H] {
+    new Applicative[H] { self =>
       def pure[A](x: A): H[A] = Done(x)
-      def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] = {
-        ap_(0, ff, fa)
-      }
-      override def map[A, B](fa: H[A])(f: A => B): H[B] = fa match {
-        case LiftF(fa) => LiftF(fa.map(a => map(a)(f)))
-        case Done(a)   => Done(f(a))
-        case Run(requests) => Run(requests.map(f))
-        case Errs(raiseds) => Errs(raiseds)
-        case other     => super.map(other)(f)
+      def ap[A, B](ff: H[A => B])(fa: H[A]): H[B] =
+        (ff, fa) match {
+          case (Errs(e1), Errs(e2)) => Errs(e1 ++ e2)
+          case (Errs(e), _)         => Errs(e)
+          case (_, Errs(e))         => Errs(e)
+          case (LiftF(fa), LiftF(fb)) =>
+            LiftF(gf((fg(fa), fg(fb)).mapN(self.ap(_)(_))))
+          case (LiftF(fa), h) => LiftF(fa.map(self.ap(_)(h)))
+          case (h, LiftF(fa)) => LiftF(fa.map(self.ap(h)(_)))
+          case (at: AndThen[F, a1, A => B], ab: AndThen[F, a2, A]) =>
+            AndThen[F, (a1, a2), B](
+              self.tuple2(at.safeFaK(gf), ab.safeFaK(gf)),
+              { case (a1, a2) =>
+                self.ap(at.fb(a1))(ab.fb(a2))
+              }
+            )
+
+          // flatMap <*> batch -> move batch into left side of flatMap
+          case (at: AndThen[F, a, A => B], fb) =>
+            AndThen[F, (a, A), B](
+              self.tuple2(at.safeFaK(gf), fb),
+              { case (a, a2) =>
+                self.ap(at.fb(a))(Done(a2))
+              }
+            )
+          case (fa, ab: AndThen[F, a, A]) =>
+            AndThen[F, (A => B, a), B](
+              self.tuple2(fa, ab.safeFaK(gf)),
+              { case (f, a2) =>
+                self.ap(Done(f))(ab.fb(a2))
+              }
+            )
+
+          case (Done(f), Done(a)) => Done(f(a))
+          case (r1: Run[F, A => B], r2: Run[F, A]) =>
+            self.map(Run((r1.requests, r2.requests).tupled)) { case (f, a) => f(a) }
+          case (r: Run[F, A => B], Done(a)) => Run(r.requests.map(_(a)))
+          case (Done(f), r: Run[F, A])      => Run(r.requests.map(f(_)))
+        }
+      override def map[A, B](fa: H[A])(f: A => B): H[B] = Hxl.fmap(fa)(f)
+      override def as[A, B](fa: H[A], b: B): H[B] = fa match {
+        case LiftF(fa)                 => LiftF(fa.map(a => as(a, b)))
+        case Done(_)                   => Done(b)
+        case Run(requests)             => Run(requests.as(b))
+        case Errs(raiseds)             => Errs(raiseds)
+        case andThen: AndThen[F, a, A] => AndThen(andThen.unsafeFa, (a: a) => as(andThen.fb(a), b))
       }
     }
   }
+
+  def sequence[F[_]: Applicative, A](xs: Array[Hxl[F, A]]): Hxl[F, ArraySeq[A]] =
+    HxlOpt.sequence(xs)
+
+  def traverse[F[_]: Applicative, A, B](xs: Array[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] =
+    HxlOpt.traverse(xs)(f)
 
   implicit def applicativeForHxl[F[_]: Applicative]: Applicative[Hxl[F, *]] =
     applicativeInstance[F, F](FunctionK.id[F], FunctionK.id[F])

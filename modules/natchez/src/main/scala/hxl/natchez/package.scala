@@ -62,15 +62,18 @@ object NatchezInternal {
 
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =
-      DataSource.full[F, K, V](source.key) { ks =>
+      DataSource.fullResult[F, K, V](source.key) { ks =>
         Trace[F].span(s"datasource.${source.key}") {
           Trace[F].put("keys" -> ks.size) *> source.batch(ks)
         }
-      }(source.optimization)
+      }
 
-    req.copy(
-      requests = req.requests.map { case (ds, k) => (traceSource(ds), k) }
-    )
+    Requests { setup =>
+      req.setup(new Requests.Setup[F] {
+        def request[K, V](source: DataSource[F, K, V], key: K): () => Option[V] =
+          setup.request(traceSource(source), key)
+      })
+    }
   }
 
   def composeTracing[F[_]: Trace: Applicative, G[_]: Trace: Applicative](
