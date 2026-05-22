@@ -85,6 +85,12 @@ object Requests {
   def fetch[F[_], K, V](source: DataSource[F, K, V], key: K): Requests[F, Option[V]] =
     Requests(_.request(source, key))
 
+  def unsafeFetch[F[_], K, V](source: DataSource[F, K, V], key: K): Requests[F, V] =
+    Requests { setup =>
+      val value = setup.request(source, key)
+      () => value().get
+    }
+
   def empty[F[_], A]: Requests[F, Unit] =
     Requests(_ => () => throw new NoSuchElementException("empty requests"))
 

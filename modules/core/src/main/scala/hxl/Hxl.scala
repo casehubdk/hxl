@@ -172,6 +172,9 @@ object Hxl {
   def apply[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Option[V]] =
     Run[F, Option[V]](Requests.fetch(source, k))
 
+  def unsafeGet[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, V] =
+    Run[F, V](Requests.unsafeFetch(source, k))
+
   def discard[F[_], K, V](k: K, source: DataSource[F, K, V]): Hxl[F, Unit] =
     Run[F, Unit](Requests.fetch(source, k).void)
 

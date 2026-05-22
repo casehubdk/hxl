@@ -30,10 +30,28 @@ class HxlEvaluationTest extends FunSuite {
     F.pure(ks.toList.map(s => s -> s))
   }
 
+  case object OptionalKey extends DSKey[String, String]
+  def optionalDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(OptionalKey) { ks =>
+    F.pure(ks.toList.flatMap(k => Map("foo" -> "bar").get(k).tupleLeft(k)))
+  }
+
   test("should be able to construct and evaluate a hxl in Id") {
     val fa = Hxl("foo", simpleDataSource[Id])
     val result = (fa, fa).mapN(_.mkString + " " + _.mkString)
     assertEquals(Hxl.runSequential(result), "foo foo")
+  }
+
+  test("Hxl.unsafeGet returns existing values") {
+    assertEquals(Hxl.runSequential(Hxl.unsafeGet("foo", optionalDataSource[Id])), "bar")
+  }
+
+  test("Hxl.unsafeGet throws when value is missing") {
+    intercept[NoSuchElementException](Hxl.runSequential(Hxl.unsafeGet("missing", optionalDataSource[Id])))
+  }
+
+  test("Requests.unsafeFetch returns existing values") {
+    val request = Requests.unsafeFetch(optionalDataSource[Id], "foo")
+    assertEquals(Hxl.runSequential(Hxl.Run[Id, String](request)), "bar")
   }
 
   test("should be able to conduct the same test but in Eval instead") {

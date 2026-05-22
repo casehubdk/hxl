@@ -47,3 +47,20 @@ lazy val natchez = project
     )
   )
   .settings(name := "hxl-natchez")
+
+lazy val bench = project
+  .in(file("modules/bench"))
+  .dependsOn(core)
+  .enablePlugins(JmhPlugin)
+  .settings(sharedSettings)
+  .settings(
+    name := "hxl-bench",
+    publish / skip := true,
+    scalaVersion := "2.13.18",
+    crossScalaVersions := Seq("2.13.18"),
+    libraryDependencies := libraryDependencies.value.filterNot { dep =>
+      (dep.organization == "org.typelevel" && dep.name == "kind-projector") ||
+      (dep.organization == "com.olegpy" && dep.name == "better-monadic-for")
+    },
+    libraryDependencies += "org.typelevel" %% "cats-effect" % "3.7.0"
+  )
