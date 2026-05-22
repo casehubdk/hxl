@@ -421,3 +421,14 @@ The error type appears at the boundary, not throughout the query type.
   <https://simonmar.github.io/bib/papers/haxl-icfp14.pdf>
 - Haxl API documentation:
   <https://hackage.haskell.org/package/haxl-0.1.0.0/docs/Haxl-Core-Monad.html>
+
+```
+toHaxl :: Hxl IO a -> Fetch a
+toHaxl (Run requests) = Blocked requests pure
+toHaxl (Errs es) = Throw es
+toHaxl (Bind q k) = toHaxl q >>= toHaxl . k
+
+fromHaxl :: Fetch a -> Hxl IO a
+fromHaxl (Failed es) = Errs es
+fromHaxl (Blocked requests resume) = (Run requests) >>= fromHaxl . resume
+```
