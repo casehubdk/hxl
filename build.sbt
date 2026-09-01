@@ -64,3 +64,4 @@ lazy val bench = project
     },
     libraryDependencies += "org.typelevel" %% "cats-effect" % "3.7.0"
   )
+  .enablePlugins(NoPublishPlugin)
