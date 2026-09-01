@@ -16,9 +16,10 @@
 
 package hxl
 
-import cats.data._
 import cats._
 import cats.implicits._
+import scala.collection.mutable
+import scala.reflect.ClassTag
 
 /*
  * A data source is simply a pair of a key and a function that efficiently fetches data.
@@ -40,40 +41,75 @@ import cats.implicits._
  * ```
  */
 trait DataSource[F[_], K, V] {
-  type K2
-
   def key: DSKey[K, V]
 
-  // If we don't care about the output, we can optimize the batch since
-  // we don't need to gather the results
-  def optimization: Option[Unit <:< V]
-
-  def k2(k: K): K2
-
-  def batch(ks: NonEmptyList[K]): F[Map[K2, V]]
+  def batch(ks: mutable.ArrayBuffer[K]): F[DataSource.Result[K, V]]
 
   def mapK[G[_]](fk: F ~> G): DataSource[G, K, V] =
-    DataSource.full[G, K, K2, V](key)(k2)(ks => fk(batch(ks)))(optimization)
+    DataSource.fullResult[G, K, V](key)(ks => fk(batch(ks)))
 }
 
 object DataSource {
-  def full[F[_], K, K2, V](key: DSKey[K, V])(k2: K => K2)(f: NonEmptyList[K] => F[Map[K2, V]])(optimization: Option[Unit <:< V]) = {
+  trait Result[K, +V] {
+    def get(key: K, index: Int): Option[V]
+  }
+
+  object Result {
+    def empty[K, V]: Result[K, V] =
+      EmptyResult.asInstanceOf[Result[K, V]]
+
+    def fromMap[K, V](values: collection.Map[K, V]): Result[K, V] =
+      new MapResult(values)
+
+    def fromIterableOnce[K, V](values: IterableOnce[(K, V)]): Result[K, V] =
+      fromMap(scala.collection.mutable.HashMap.from(values))
+
+    def indexedValues[K, V](values: Array[V]): Result[K, V] =
+      new IndexedValueResult(values)
+  }
+
+  private object EmptyResult extends Result[Any, Nothing] {
+    def get(key: Any, index: Int): Option[Nothing] = None
+  }
+
+  private final class MapResult[K, V](values: collection.Map[K, V]) extends Result[K, V] {
+    def get(key: K, index: Int): Option[V] =
+      values.get(key)
+  }
+
+  private final class IndexedValueResult[K, V](values: Array[V]) extends Result[K, V] {
+    def get(key: K, index: Int): Option[V] =
+      if (index >= 0 && index < values.length) Some(values(index))
+      else None
+  }
+
+  def fullResult[F[_], K, V](key: DSKey[K, V])(f: mutable.ArrayBuffer[K] => F[Result[K, V]]) = {
     val key0 = key
-    val opt = optimization
-    val k20 = k2
-    type K20 = K2
     new DataSource[F, K, V] {
-      type K2 = K20
       def key = key0
-      def k2(k: K) = k20(k)
-      def optimization: Option[Unit <:< V] = opt
-      def batch(ks: NonEmptyList[K]) = f(ks)
+      def batch(ks: mutable.ArrayBuffer[K]) = f(ks)
     }
   }
 
-  def from[F[_], K, V](key: DSKey[K, V])(f: NonEmptyList[K] => F[Map[K, V]]): DataSource[F, K, V] =
-    full(key)(identity)(f)(None)
+  def full[F[_]: Functor, K, V](key: DSKey[K, V])(f: mutable.ArrayBuffer[K] => F[collection.Map[K, V]]) =
+    fullResult(key)(ks => f(ks).map(Result.fromMap(_)))
 
-  def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: NonEmptyList[K] => F[Unit]): DataSource[F, K, Unit] =
-    DataSource.full(key)(identity)(ks => f(ks).as(Map.empty[K, Unit]))(Some(implicitly))
+  final class PartiallyAppliedIt[F[_], K, V](key: DSKey[K, V]) {
+    def apply[Container <: IterableOnce[(K, V)]](
+        f: mutable.ArrayBuffer[K] => F[Container]
+    )(implicit F: Functor[F]): DataSource[F, K, V] =
+      fullResult(key)(ks => f(ks).map(Result.fromIterableOnce(_)))
+  }
+
+  def from[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedIt[F, K, V] =
+    new PartiallyAppliedIt(key)
+
+  def assoc[F[_]: Functor, K: ClassTag, V](key: DSKey[K, V])(f: Array[K] => F[Array[V]]): DataSource[F, K, V] =
+    fullResult(key) { ks =>
+      val keys = ks.toArray
+      f(keys).map(Result.indexedValues[K, V])
+    }
+
+  def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: mutable.ArrayBuffer[K] => F[Unit]): DataSource[F, K, Unit] =
+    DataSource.fullResult(key)(ks => f(ks).as(Result.empty[K, Unit]))
 }

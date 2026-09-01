@@ -17,141 +17,144 @@
 package hxl
 
 import cats._
-import cats.data._
-import cats.free._
 import cats.implicits._
-import cats.arrow.FunctionK
-import scala.collection.View
+import scala.collection.mutable
+import scala.collection.immutable.ArraySeq
 
 /*
  * Requests is the accumulation structure Hxl uses internally to batch requests.
  */
 final case class Requests[F[_], A](
-    discards: View[Requests.Discarded[F, ?]],
-    assocs: FreeApplicative[Requests.Assoc[F, *], A],
-    private val cachedRequests: Option[Requests.PreparedRequests[F]]
+    setup: Requests.Setup[F] => () => A
 ) {
-  import Requests._
-  def mapK[G[_]](fk: F ~> G) = Requests(
-    discards.map(_.mapK(fk)),
-    assocs.compile(new FunctionK[Assoc[F, *], Assoc[G, *]] {
-      def apply[B](fa: Assoc[F, B]): Assoc[G, B] = fa.mapK(fk)
-    }),
-    cachedRequests.map(_.map { case (k, t) => (k, t.copy(source = t.source.mapK(fk))) })
-  )
+  def mapK[G[_]](fk: F ~> G): Requests[G, A] =
+    Requests(setup0 => setup(new Requests.MapKSetup(setup0, fk)))
 
-  def visit(visitor: DataSourceVisitor[F]): Requests[F, A] =
-    Requests(
-      discards.map { case d: Discarded[F, a] =>
-        val (source, key) = visitor.visit(d.source, d.key)
-        Discarded[F, a](source, key)
-      },
-      assocs.compile(new FunctionK[Assoc[F, *], Assoc[F, *]] {
-        def apply[B](fa: Assoc[F, B]): Assoc[F, B] = fa match {
-          case a: AssocImpl[F, k, b] @unchecked =>
-            val (source, key) = visitor.visit(a.source, a.key)
-            AssocImpl[F, k, b](source, key)
-        }
-      }),
-      cachedRequests.map(_.map { case (k, t) =>
-        val (source, _) = visitor.visit(t.source, t.keys.head)
-        (k, T(source, t.keys))
-      })
-    )
-
-  def optimized: Requests[F, A] =
-    cachedRequests match {
-      case Some(_) => this
-      case None    => copy(cachedRequests = Some(generateRequestKeys(this)))
+  def discard: Requests[F, Unit] =
+    Requests { setup0 =>
+      setup(setup0)
+      () => ()
     }
 }
 object Requests {
-  trait DataSourceVisitor[F[_]] {
-    def visit[K, V](source: DataSource[F, K, V], k: K): (DataSource[F, K, V], K)
+  trait Setup[F[_]] {
+    def request[K, V](source: DataSource[F, K, V], key: K): () => Option[V]
   }
 
-  final case class Discarded[F[_], K](source: DataSource[F, K, ?], key: K) {
-    def mapK[G[_]](fk: F ~> G) = Discarded(source.mapK(fk), key)
+  private final class MapKSetup[F[_], G[_]](setup: Setup[G], fk: F ~> G) extends Setup[F] {
+    def request[K, V](source: DataSource[F, K, V], key: K): () => Option[V] =
+      setup.request(source.mapK(fk), key)
   }
 
-  sealed trait Assoc[F[_], A] {
-    def mapK[G[_]](fk: F ~> G): Assoc[G, A]
-  }
-  final case class AssocImpl[F[_], K, A](source: DataSource[F, K, A], key: K) extends Assoc[F, Option[A]] {
-    def mapK[G[_]](fk: F ~> G) = AssocImpl(source.mapK(fk), key)
-  }
+  private final class SourceState[F[_]](
+      val index: Int,
+      val ds: DataSource[F, Any, Any]
+  ) {
+    val keys: mutable.ArrayBuffer[Any] = mutable.ArrayBuffer.empty[Any]
+    val keyIndex: mutable.HashMap[Any, Int] = mutable.HashMap.empty[Any, Int]
 
-  implicit def applicativeForBase[F[_]]: Applicative[Requests[F, *]] = new Applicative[Requests[F, *]] {
-    def pure[A](x: A): Requests[F, A] = Requests(View.empty, FreeApplicative.pure(x), None)
-
-    val FF = FreeApplicative.freeApplicative[Assoc[F, *]]
-    def ap[A, B](ff: Requests[F, A => B])(fa: Requests[F, A]): Requests[F, B] =
-      Requests(ff.discards ++ fa.discards, FF.ap(ff.assocs)(fa.assocs), None)
-  }
-
-  def lift[F[_], A, B](source: DataSource[F, A, B], key: A): Requests[F, Option[B]] = {
-    val a: Assoc[F, Option[B]] = AssocImpl[F, A, B](source, key)
-    Requests(View.empty, FreeApplicative.lift(a), None)
-  }
-
-  def empty[F[_], A, B](source: DataSource[F, A, ?], key: A, as: B): Requests[F, B] =
-    Requests(View(Discarded(source, key)), FreeApplicative.pure(as), None)
-
-  def discard[F[_], A](source: DataSource[F, A, ?], key: A): Requests[F, Unit] =
-    empty(source, key, ())
-
-  final case class DSKey0(value: Any) extends AnyRef
-  final case class ValueKey(value: Any) extends AnyRef
-  final case class Value(value: Any) extends AnyRef
-  final case class T2(result: Map[Any, Any]) extends AnyVal
-  final case class T[F[_]](source: DataSource[F, Any, Any], keys: scala.collection.mutable.Set[ValueKey])
-  type PreparedRequests[F[_]] = Seq[(DSKey0, T[F])]
-  def generateRequestKeys[F[_], A](reqs: Requests[F, A]): PreparedRequests[F] = {
-    val xs = scala.collection.mutable.HashMap.empty[DSKey0, T[F]]
-    val c = Const(())
-    reqs.assocs.foldMap(new FunctionK[Assoc[F, *], Const[Unit, *]] {
-      def apply[B](fa: Assoc[F, B]): Const[Unit, B] = {
-        val ai = fa.asInstanceOf[AssocImpl[F, A, ?]]
-        val t = xs.getOrElseUpdate(
-          DSKey0(ai.source.key),
-          T(ai.source.asInstanceOf[DataSource[F, Any, Any]], scala.collection.mutable.Set.empty[ValueKey])
-        )
-        t.keys += ValueKey(ai.key)
-        c.retag[B]
-      }
-    })
-    reqs.discards.foreach { case (d: Discarded[F, a]) =>
-      val t = xs.getOrElseUpdate(
-        DSKey0(d.source.key),
-        T(d.source.asInstanceOf[DataSource[F, Any, Any]], scala.collection.mutable.Set.empty[ValueKey])
-      )
-      t.keys += ValueKey(d.key)
-    }
-    xs.toSeq
-  }
-
-  def run[F[_]: Parallel, A](requests: Requests[F, A])(implicit
-      F: Applicative[F]
-  ): F[A] = {
-    val xs = generateRequestKeys(requests)
-
-    val ops = xs.toSeq.parTraverse { case (_, t) =>
-      t.keys.view
-        .map(_.value)
-        .toList
-        .toNel
-        .traverse(nel => t.source.batch(nel))
-        .map(View.from(_).map(m => (DSKey0(t.source.key), T2(m.asInstanceOf[Map[Any, Any]]))))
-    }
-
-    ops.map { v =>
-      val m = v.view.flatten.toMap
-      requests.assocs.foldMap[Id](new FunctionK[Assoc[F, *], Id] {
-        def apply[B](fa: Assoc[F, B]): Id[B] = fa match {
-          case ai: AssocImpl[F, k, a] @unchecked =>
-            m.get(DSKey0(ai.source.key)).flatMap(_.result.get(ai.source.k2(ai.key))).asInstanceOf[B]
+    def add(key: Any): Int =
+      keyIndex.getOrElseUpdate(
+        key, {
+          val index = keys.length
+          keys += key
+          index
         }
-      })
+      )
+  }
+
+  private final class RunSetup[F[_]] extends Setup[F] {
+    val sourceIndex: mutable.HashMap[DSKey[?, ?], SourceState[F]] = mutable.HashMap.empty
+    val sources: mutable.ArrayBuffer[SourceState[F]] = mutable.ArrayBuffer.empty
+    var results: Array[DataSource.Result[Any, Any]] = _
+
+    def request[K, V](source: DataSource[F, K, V], key: K): () => Option[V] = {
+      val state = sourceIndex.getOrElseUpdate(
+        source.key, {
+          val index = sources.length
+          val state = new SourceState(index, source.asInstanceOf[DataSource[F, Any, Any]])
+          sources += state
+          state
+        }
+      )
+      val keyIndex = state.add(key)
+      () => results(state.index).get(key, keyIndex).asInstanceOf[Option[V]]
+    }
+  }
+
+  def fetch[F[_], K, V](source: DataSource[F, K, V], key: K): Requests[F, Option[V]] =
+    Requests(_.request(source, key))
+
+  def unsafeFetch[F[_], K, V](source: DataSource[F, K, V], key: K): Requests[F, V] =
+    Requests { setup =>
+      val value = setup.request(source, key)
+      () => value().get
+    }
+
+  def empty[F[_], A]: Requests[F, Unit] =
+    Requests(_ => () => throw new NoSuchElementException("empty requests"))
+
+  implicit def applicative[F[_]]: Applicative[Requests[F, *]] = new Applicative[Requests[F, *]] {
+    def pure[A](x: A): Requests[F, A] =
+      Requests(_ => () => x)
+
+    def ap[A, B](ff: Requests[F, A => B])(fa: Requests[F, A]): Requests[F, B] =
+      Requests { setup =>
+        val f = ff.setup(setup)
+        val a = fa.setup(setup)
+        () => f()(a())
+      }
+
+    override def map[A, B](fa: Requests[F, A])(f: A => B): Requests[F, B] =
+      Requests { setup =>
+        val a = fa.setup(setup)
+        () => f(a())
+      }
+
+    override def as[A, B](fa: Requests[F, A], b: B): Requests[F, B] =
+      Requests { setup =>
+        fa.setup(setup)
+        () => b
+      }
+
+    override def void[A](fa: Requests[F, A]): Requests[F, Unit] =
+      Requests { setup =>
+        fa.setup(setup)
+        () => ()
+      }
+  }
+
+  private def runOne[F[_]: Applicative, A](rebuild: () => A, setup: RunSetup[F], state: SourceState[F]): F[A] =
+    state.ds.batch(state.keys).map { result =>
+      setup.results = Array(result.asInstanceOf[DataSource.Result[Any, Any]])
+      rebuild()
+    }
+
+  private def runMany[F[_]: Parallel, A](
+      rebuild: () => A,
+      setup: RunSetup[F]
+  )(implicit F: Applicative[F]): F[A] = {
+    val fa = ArraySeq.from(setup.sources).parTraverse { source =>
+      source.ds.batch(source.keys).tupleLeft(source.index)
+    }
+
+    fa.map { xs =>
+      val results = new Array[DataSource.Result[Any, Any]](setup.sources.length)
+      xs.foreach { case (index, result) =>
+        results(index) = result.asInstanceOf[DataSource.Result[Any, Any]]
+      }
+      setup.results = results
+      rebuild()
+    }
+  }
+
+  def run[F[_]: Parallel, A](requests: Requests[F, A])(implicit F: Applicative[F]): F[A] = {
+    val setup = new RunSetup[F]
+    val rebuild = requests.setup(setup)
+    setup.sources.length match {
+      case 0 => F.pure(rebuild())
+      case 1 => runOne(rebuild, setup, setup.sources(0))
+      case _ => runMany(rebuild, setup)
     }
   }
 }

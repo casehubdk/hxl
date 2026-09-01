@@ -27,13 +27,31 @@ final case class FailingKey(key: String) extends DSKey[String, String]
 class HxlEvaluationTest extends FunSuite {
   case object SimpleKey extends DSKey[String, String]
   def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey) { ks =>
-    F.pure(ks.toList.map(s => s -> s).toMap)
+    F.pure(ks.toList.map(s => s -> s))
+  }
+
+  case object OptionalKey extends DSKey[String, String]
+  def optionalDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(OptionalKey) { ks =>
+    F.pure(ks.toList.flatMap(k => Map("foo" -> "bar").get(k).tupleLeft(k)))
   }
 
   test("should be able to construct and evaluate a hxl in Id") {
     val fa = Hxl("foo", simpleDataSource[Id])
     val result = (fa, fa).mapN(_.mkString + " " + _.mkString)
     assertEquals(Hxl.runSequential(result), "foo foo")
+  }
+
+  test("Hxl.unsafeGet returns existing values") {
+    assertEquals(Hxl.runSequential(Hxl.unsafeGet("foo", optionalDataSource[Id])), "bar")
+  }
+
+  test("Hxl.unsafeGet throws when value is missing") {
+    intercept[NoSuchElementException](Hxl.runSequential(Hxl.unsafeGet("missing", optionalDataSource[Id])))
+  }
+
+  test("Requests.unsafeFetch returns existing values") {
+    val request = Requests.unsafeFetch(optionalDataSource[Id], "foo")
+    assertEquals(Hxl.runSequential(Hxl.Run[Id, String](request)), "bar")
   }
 
   test("should be able to conduct the same test but in Eval instead") {
@@ -44,7 +62,7 @@ class HxlEvaluationTest extends FunSuite {
 
   case object SimpleKey2 extends DSKey[String, String]
   def simpleDataSource2[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey2) { ks =>
-    F.pure(ks.toList.map(s => s -> s).toMap)
+    F.pure(ks.toList.map(s => s -> s))
   }
 
   test(s"should be able to mix two different data sources together") {
@@ -103,6 +121,84 @@ class HxlEvaluationTest extends FunSuite {
     assertEquals(result.runS(0).value, 1)
   }
 
+  test("Hxl.sequence matches cats sequence") {
+    val xs = List("foo", "bar", "foo").map(Hxl(_, simpleDataSource[Id]))
+    assertEquals(Hxl.runSequential(Hxl.sequence(xs.toArray)).toList, Hxl.runSequential(xs.sequence))
+  }
+
+  test("Hxl.sequence batches runs and preserves done slots") {
+    type Effect[A] = StateT[Id, Int, A]
+    val fa = Hxl("foo", statefulDataSource[Id])
+    val done = Hxl.pure[Effect, Option[String]](Some("done"))
+    val result = Hxl.runSequential(Hxl.sequence(Array(fa, done, fa)))
+    val (state, values) = result.run(0)
+    assertEquals((state, values.toList), (1, List(Some("foo"), Some("done"), Some("foo"))))
+  }
+
+  test("Hxl.sequence preserves liftF round scheduling") {
+    val fa = Hxl("foo", statefulDataSource[Eval])
+    val lifted = Hxl.embedF(fa.pure[StateT[Eval, Int, *]])
+    val result = Hxl.runSequential(Hxl.sequence(Array(lifted, fa)))
+    assertEquals(result.runS(0).value, 1)
+  }
+
+  test("Hxl.sequence keeps andThen continuations paired with their lhs") {
+    val left = Hxl.pure[Id, Int](1).andThen(i => Hxl.pure[Id, String]((i + 1).toString))
+    val right = Hxl.pure[Id, String]("a").andThen(s => Hxl.pure[Id, String](s + "b"))
+    assertEquals(Hxl.runSequential(Hxl.sequence(Array(left, right))).toList, List("2", "ab"))
+  }
+
+  test("Hxl.traverse handles empty and singleton arrays") {
+    var ran = false
+    val empty = Hxl.traverse(Array.empty[Int]) { i =>
+      ran = true
+      Hxl.pure[Id, Int](i)
+    }
+    val single = Hxl.traverse(Array(1))(i => Hxl.pure[Id, Int](i + 1))
+
+    assertEquals(Hxl.runSequential(empty).toList, Nil)
+    assert(!ran)
+    assertEquals(Hxl.runSequential(single).toList, List(2))
+  }
+
+  test("Hxl.traverse preserves array order") {
+    val result = Hxl.runSequential(Hxl.traverse(Array("c", "a", "b"))(Hxl(_, simpleDataSource[Id])))
+    assertEquals(result.toList, List(Some("c"), Some("a"), Some("b")))
+  }
+
+  test("Applicative.ap composes andThen with run directly") {
+    type Effect[A] = StateT[Id, Vector[List[String]], A]
+    object ApKey extends DSKey[String, String]
+    val ds = DataSource.from[Effect, String, String](ApKey) { keys =>
+      StateT[Id, Vector[List[String]], Map[String, String]] { log =>
+        (log :+ keys.toList, keys.toList.map(k => k -> k).toMap)
+      }
+    }
+    val ff = Hxl.pure[Effect, String]("foo").andThen { key =>
+      Hxl(key, ds).map { prefix => (value: Option[String]) =>
+        s"${prefix.getOrElse("missing")}:${value.getOrElse("missing")}"
+      }
+    }
+    val fa = Hxl("bar", ds)
+
+    val result = Hxl.runSequential(Applicative[Hxl[Effect, *]].ap(ff)(fa)).run(Vector.empty)
+
+    assertEquals(result, (Vector(List("bar"), List("foo")), "foo:bar"))
+  }
+
+  test("deep applicative composition of binds is stack safe") {
+    val values = (0 until 10000).toList
+    def node(i: Int): Hxl[Id, Int] =
+      Hxl.pure[Id, Int](i).andThen(i => Hxl.pure[Id, Int](i + 1))
+
+    val result = Hxl.runSequential(values.traverse(node))
+    val fastResult = Hxl.runSequential(Hxl.traverse(values.toArray)(node))
+    assertEquals(result.headOption, Some(1))
+    assertEquals(result.lastOption, Some(10000))
+    assertEquals(fastResult.headOption, Some(1))
+    assertEquals(fastResult.lastOption, Some(10000))
+  }
+
   def failingDataSource[F[_]](key: String)(implicit F: ApplicativeError[F, NonEmptyChain[String]]) =
     DataSource.from(FailingKey(key)) { _ =>
       F.raiseError[Map[String, String]](NonEmptyChain.one("error"))
@@ -137,16 +233,48 @@ class HxlEvaluationTest extends FunSuite {
     assertEquals(errs, 1L)
   }
 
+  test("Hxl.sequence accumulates visible hxl errors") {
+    val result = Hxl.channel[Id, String, scala.collection.immutable.ArraySeq[Unit]] { raise =>
+      Hxl.sequence(Array(raise.raise[Unit]("a"), raise.raise[Unit]("b")))
+    }
+    assertEquals(Hxl.runSequential(result), Left("ab"))
+  }
+
   test("benchmark nondiscards") {
     val rng = (0 until 1000).toList
     def s = rng.traverse(_ => Hxl("foo", simpleDataSource[Id]).void)
+    def fast = Hxl.traverse(rng.toArray)(_ => Hxl("foo", simpleDataSource[Id]).void)
     // warmup
-    (0 until 100).foreach(_ => Hxl.runSequential(s))
+    (0 until 100).foreach { _ =>
+      Hxl.runSequential(s)
+      Hxl.runSequential(fast)
+    }
     // report
     val start = System.currentTimeMillis()
     Hxl.runSequential(s)
+    val mid = System.currentTimeMillis()
+    Hxl.runSequential(fast)
     val end = System.currentTimeMillis()
-    println("Benchmark result: " + (end - start) + "ms")
+    println("Benchmark result: cats=" + (mid - start) + "ms fast=" + (end - mid) + "ms")
+  }
+
+  test("benchmark bind-heavy traverse") {
+    val rng = (0 until 1000).toList
+    def node = Hxl.pure[Id, Unit](()).andThen(_ => Hxl("foo", simpleDataSource[Id]).void)
+    def s = rng.traverse(_ => node)
+    def fast = Hxl.traverse(rng.toArray)(_ => node)
+    // warmup
+    (0 until 100).foreach { _ =>
+      Hxl.runSequential(s)
+      Hxl.runSequential(fast)
+    }
+    // report
+    val start = System.currentTimeMillis()
+    Hxl.runSequential(s)
+    val mid = System.currentTimeMillis()
+    Hxl.runSequential(fast)
+    val end = System.currentTimeMillis()
+    println("Bind benchmark result: cats=" + (mid - start) + "ms fast=" + (end - mid) + "ms")
   }
 
   test("benchmark discards") {
@@ -159,6 +287,25 @@ class HxlEvaluationTest extends FunSuite {
     Hxl.runSequential(s)
     val end = System.currentTimeMillis()
     println("Benchmark result: " + (end - start) + "ms")
+  }
+
+  test("discard still runs and de-duplicates requests") {
+    val fa = Hxl.discard("foo", statefulDataSource[Id])
+    val n = Hxl.runSequential(Hxl.sequence(Array(fa, fa)).void).runS(0)
+    assertEquals(n, 1)
+  }
+
+  case object AssocKey extends DSKey[Int, String]
+  test("assoc datasource uses indexed results") {
+    var seen = Vector.empty[List[Int]]
+    val ds = DataSource.assoc[Id, Int, String](AssocKey) { keys =>
+      seen = seen :+ keys.toList
+      keys.take(2).map("value-" + _)
+    }
+
+    val result = Hxl.runSequential(Hxl.traverse(Array(1, 2, 1, 3))(Hxl(_, ds)))
+    assertEquals(result.toList, List(Some("value-1"), Some("value-2"), Some("value-1"), None))
+    assertEquals(seen, Vector(List(1, 2, 3)))
   }
 
   case class VarKey(str: String) extends DSKey[String, String]
@@ -199,6 +346,32 @@ class HxlEvaluationTest extends FunSuite {
     val p = p1 *> p2
     Hxl.runSequential(p)
     assertEquals(m("a"), 1)
+    assertEquals(m("b"), 1)
+  }
+
+  test("Hxl.sequence preserves bind alignment across optional branches") {
+    val m = TrieMap.empty[String, Int]
+    def ds(s: String) = DataSource.from(VarKey(s)) { ks =>
+      m.updateWith(s) {
+        case None    => Some(1)
+        case Some(i) => Some(i + 1)
+      }
+      ks.toList.map(s => s -> s).toMap.pure[Id]
+    }
+    val suf = Hxl("b", ds("b"))
+
+    def f(x: Option[String]): Hxl[Id, Unit] =
+      (
+        x.traverse(str => Hxl(str, ds("a")))
+          .map(_.flatten)
+          .andThen(_.traverse(str2 => Hxl(str2, ds("a2"))))
+          .void,
+        suf
+      ).tupled.void
+
+    Hxl.runSequential(Hxl.sequence(Array(f(None), f("a".some))).void)
+    assertEquals(m("a"), 1)
+    assertEquals(m("a2"), 1)
     assertEquals(m("b"), 1)
   }
 }

@@ -1,4 +1,4 @@
-val scala213Version = "2.13.12"
+val scala213Version = "2.13.18"
 ThisBuild / scalaVersion := scala213Version
 ThisBuild / crossScalaVersions := Seq(scala213Version, "3.3.0")
 ThisBuild / organization := "io.github.casehubdk"
@@ -23,8 +23,8 @@ ThisBuild / startYear := Some(2024)
 
 lazy val sharedSettings = Seq(
   libraryDependencies ++= Seq(
-    "org.typelevel" %% "cats-core" % "2.9.0",
-    "org.typelevel" %% "cats-free" % "2.9.0",
+    "org.typelevel" %% "cats-core" % "2.13.0",
+    "org.typelevel" %% "cats-free" % "2.13.0",
     "org.scalameta" %% "munit" % "1.0.0-M6" % Test,
     "org.typelevel" %% "munit-cats-effect" % "2.0.0-M3" % Test
   )
@@ -47,3 +47,19 @@ lazy val natchez = project
     )
   )
   .settings(name := "hxl-natchez")
+
+lazy val bench = project
+  .in(file("modules/bench"))
+  .dependsOn(core)
+  .enablePlugins(JmhPlugin)
+  .settings(sharedSettings)
+  .settings(
+    name := "hxl-bench",
+    publish / skip := true,
+    libraryDependencies := libraryDependencies.value.filterNot { dep =>
+      (dep.organization == "org.typelevel" && dep.name == "kind-projector") ||
+      (dep.organization == "com.olegpy" && dep.name == "better-monadic-for")
+    },
+    libraryDependencies += "org.typelevel" %% "cats-effect" % "3.7.0"
+  )
+  .enablePlugins(NoPublishPlugin)
