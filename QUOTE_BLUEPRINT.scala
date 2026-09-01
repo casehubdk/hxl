@@ -182,10 +182,12 @@ object QuoteBlueprint {
       }.toMap
 
       couponInputs = requests.flatMap { req =>
-        req.couponCode.map { code =>
-          val customer = customers(req.customerId)
-          req -> CouponInput(customer, accounts(customer.accountId), pricedLinesByQuote(req), code)
-        }.filter { case (_, input) => canApplyCoupon(input.customer, input.account, input.code) }
+        req.couponCode
+          .map { code =>
+            val customer = customers(req.customerId)
+            req -> CouponInput(customer, accounts(customer.accountId), pricedLinesByQuote(req), code)
+          }
+          .filter { case (_, input) => canApplyCoupon(input.customer, input.account, input.code) }
       }
       couponDiscounts <- getCouponDiscounts(couponInputs.map(_._2))
       discountsByQuote = requests.map { req =>
@@ -240,9 +242,8 @@ object QuoteBlueprint {
       products <- getProductsList(lineRows.map { case (_, _, _, _, line) => line.sku })
       inventory <- getInventoriesList(lineRows.map { case (_, _, _, _, line) => line.sku })
 
-      lineRowsWithCatalog = lineRows.zip(products).zip(inventory).map {
-        case (((req, customer, account, address, line), product), stock) =>
-          (req, customer, account, address, line, product, stock)
+      lineRowsWithCatalog = lineRows.zip(products).zip(inventory).map { case (((req, customer, account, address, line), product), stock) =>
+        (req, customer, account, address, line, product, stock)
       }
 
       priceInputs = lineRowsWithCatalog.map { case (_, customer, account, _, line, _, _) =>
@@ -250,9 +251,8 @@ object QuoteBlueprint {
       }
       prices <- getPricesList(priceInputs)
 
-      pricedLines = lineRowsWithCatalog.zip(prices).map {
-        case ((_, _, _, _, line, product, stock), price) =>
-          PricedLine(line, product, stock, price)
+      pricedLines = lineRowsWithCatalog.zip(prices).map { case ((_, _, _, _, line, product, stock), price) =>
+        PricedLine(line, product, stock, price)
       }
 
       quoteRowsWithLines = quoteRows
@@ -288,18 +288,16 @@ object QuoteBlueprint {
         ShippingInput(address, account, lines)
       }
       shipping <- getShippingQuotesList(shippingInputs)
-      quoteRowsWithShipping = quoteRowsWithDiscounts.zip(shipping).map {
-        case ((req, customer, account, address, lines, discounts), ship) =>
-          (req, customer, account, address, lines, discounts, ship)
+      quoteRowsWithShipping = quoteRowsWithDiscounts.zip(shipping).map { case ((req, customer, account, address, lines, discounts), ship) =>
+        (req, customer, account, address, lines, discounts, ship)
       }
 
       taxInputs = quoteRowsWithShipping.map { case (_, customer, _, address, lines, _, ship) =>
         TaxInput(address, customer, lines, ship)
       }
       tax <- getTaxQuotesList(taxInputs)
-    } yield quoteRowsWithShipping.zip(tax).map {
-      case ((req, customer, _, _, lines, discounts, shipping), tax0) =>
-        assembleQuote(req, customer, lines, discounts, shipping, tax0)
+    } yield quoteRowsWithShipping.zip(tax).map { case ((req, customer, _, _, lines, discounts, shipping), tax0) =>
+      assembleQuote(req, customer, lines, discounts, shipping, tax0)
     }
   }
 
