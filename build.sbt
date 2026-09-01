@@ -56,8 +56,6 @@ lazy val bench = project
   .settings(
     name := "hxl-bench",
     publish / skip := true,
-    scalaVersion := "2.13.18",
-    crossScalaVersions := Seq("2.13.18"),
     libraryDependencies := libraryDependencies.value.filterNot { dep =>
       (dep.organization == "org.typelevel" && dep.name == "kind-projector") ||
       (dep.organization == "com.olegpy" && dep.name == "better-monadic-for")
