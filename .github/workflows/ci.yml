@@ -191,4 +191,5 @@ jobs:
       - name: Submit Dependencies
         uses: scalacenter/sbt-dependency-submission@v2
         with:
+          modules-ignore: hxl-bench_2.13
           configs-ignore: test scala-tool scala-doc-tool test-internal
