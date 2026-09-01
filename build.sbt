@@ -23,8 +23,8 @@ ThisBuild / startYear := Some(2024)
 
 lazy val sharedSettings = Seq(
   libraryDependencies ++= Seq(
-    "org.typelevel" %% "cats-core" % "2.9.0",
-    "org.typelevel" %% "cats-free" % "2.9.0",
+    "org.typelevel" %% "cats-core" % "2.13.0",
+    "org.typelevel" %% "cats-free" % "2.13.0",
     "org.scalameta" %% "munit" % "1.0.0-M6" % Test,
     "org.typelevel" %% "munit-cats-effect" % "2.0.0-M3" % Test
   )
