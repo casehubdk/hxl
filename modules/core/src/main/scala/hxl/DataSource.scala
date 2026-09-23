@@ -18,6 +18,7 @@ package hxl
 
 import cats._
 import cats.implicits._
+import scala.collection.immutable.ArraySeq
 import scala.collection.mutable
 import scala.reflect.ClassTag
 
@@ -91,15 +92,28 @@ object DataSource {
     }
   }
 
-  def full[F[_]: Functor, K, V](key: DSKey[K, V])(f: mutable.ArrayBuffer[K] => F[collection.Map[K, V]]) =
+  def full_[F[_]: Functor, K, V](key: DSKey[K, V])(f: mutable.ArrayBuffer[K] => F[collection.Map[K, V]]) =
     fullResult(key)(ks => f(ks).map(Result.fromMap(_)))
 
-  final class PartiallyAppliedIt[F[_], K, V](key: DSKey[K, V]) {
+  def full[F[_]: Functor, K, V](key: DSKey[K, V])(f: ArraySeq[K] => F[collection.Map[K, V]]) =
+    full_(key)(ks => f(ArraySeq.untagged.from(ks)))
+
+  final class PartiallyAppliedIt_[F[_], K, V](key: DSKey[K, V]) {
     def apply[Container <: IterableOnce[(K, V)]](
         f: mutable.ArrayBuffer[K] => F[Container]
     )(implicit F: Functor[F]): DataSource[F, K, V] =
       fullResult(key)(ks => f(ks).map(Result.fromIterableOnce(_)))
   }
+
+  final class PartiallyAppliedIt[F[_], K, V](key: DSKey[K, V]) {
+    def apply[Container <: IterableOnce[(K, V)]](
+        f: ArraySeq[K] => F[Container]
+    )(implicit F: Functor[F]): DataSource[F, K, V] =
+      from_[F, K, V](key)(ks => f(ArraySeq.untagged.from(ks)))
+  }
+
+  def from_[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedIt_[F, K, V] =
+    new PartiallyAppliedIt_(key)
 
   def from[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedIt[F, K, V] =
     new PartiallyAppliedIt(key)
@@ -110,6 +124,9 @@ object DataSource {
       f(keys).map(Result.indexedValues[K, V])
     }
 
-  def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: mutable.ArrayBuffer[K] => F[Unit]): DataSource[F, K, Unit] =
+  def void_[F[_]: Functor, K](key: DSKey[K, Unit])(f: mutable.ArrayBuffer[K] => F[Unit]): DataSource[F, K, Unit] =
     DataSource.fullResult(key)(ks => f(ks).as(Result.empty[K, Unit]))
+
+  def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: ArraySeq[K] => F[Unit]): DataSource[F, K, Unit] =
+    void_(key)(ks => f(ArraySeq.untagged.from(ks)))
 }

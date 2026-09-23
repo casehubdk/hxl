@@ -27,7 +27,7 @@ import munit.CatsEffectSuite
 
 class TracingTest extends CatsEffectSuite {
   case object SimpleKey extends DSKey[String, String]
-  def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey) { ks =>
+  def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from_(SimpleKey) { ks =>
     F.pure(ks.toList.map(s => s -> s).toMap)
   }
 

@@ -35,7 +35,7 @@ class HxlChannelTest extends FunSuite {
     result.leftMap(_.toChain.toList.toSet)
 
   def loggingDataSource: DataSource[Effect, Int, String] =
-    DataSource.from[Effect, Int, String](ChannelKey) { keys =>
+    DataSource.from_[Effect, Int, String](ChannelKey) { keys =>
       StateT[Id, Log, Map[Int, String]] { log =>
         val values = keys.toList.map(k => k -> s"value-$k").toMap
         (log :+ keys.toList.toSet, values)

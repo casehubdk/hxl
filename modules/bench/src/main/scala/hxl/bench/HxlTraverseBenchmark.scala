@@ -110,7 +110,7 @@ object HxlTraverseBenchmark {
   final case class StageKey(stage: Int) extends DSKey[Payload, Payload]
 
   private def dataSource(stage: Int): DataSource[SyncIO, Payload, Payload] =
-    DataSource.full[SyncIO, Payload, Payload](StageKey(stage)) { keys =>
+    DataSource.full_[SyncIO, Payload, Payload](StageKey(stage)) { keys =>
       SyncIO.pure(Map.from(keys.map(payload => payload -> step(stage, payload))))
     }
 

@@ -26,12 +26,12 @@ final case class FailingKey(key: String) extends DSKey[String, String]
 
 class HxlEvaluationTest extends FunSuite {
   case object SimpleKey extends DSKey[String, String]
-  def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey) { ks =>
+  def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from_(SimpleKey) { ks =>
     F.pure(ks.toList.map(s => s -> s))
   }
 
   case object OptionalKey extends DSKey[String, String]
-  def optionalDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(OptionalKey) { ks =>
+  def optionalDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from_(OptionalKey) { ks =>
     F.pure(ks.toList.flatMap(k => Map("foo" -> "bar").get(k).tupleLeft(k)))
   }
 
@@ -61,7 +61,7 @@ class HxlEvaluationTest extends FunSuite {
   }
 
   case object SimpleKey2 extends DSKey[String, String]
-  def simpleDataSource2[F[_]](implicit F: Applicative[F]) = DataSource.from(SimpleKey2) { ks =>
+  def simpleDataSource2[F[_]](implicit F: Applicative[F]) = DataSource.from_(SimpleKey2) { ks =>
     F.pure(ks.toList.map(s => s -> s))
   }
 
@@ -80,7 +80,7 @@ class HxlEvaluationTest extends FunSuite {
   }
 
   case object StatefulKey extends DSKey[String, String]
-  def statefulDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from(StatefulKey) { ks =>
+  def statefulDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from_(StatefulKey) { ks =>
     StateT { (i: Int) =>
       F.pure {
         (i + ks.size, ks.toList.map(s => s -> s).toMap)
@@ -169,7 +169,7 @@ class HxlEvaluationTest extends FunSuite {
   test("Applicative.ap composes andThen with run directly") {
     type Effect[A] = StateT[Id, Vector[List[String]], A]
     object ApKey extends DSKey[String, String]
-    val ds = DataSource.from[Effect, String, String](ApKey) { keys =>
+    val ds = DataSource.from_[Effect, String, String](ApKey) { keys =>
       StateT[Id, Vector[List[String]], Map[String, String]] { log =>
         (log :+ keys.toList, keys.toList.map(k => k -> k).toMap)
       }
@@ -200,7 +200,7 @@ class HxlEvaluationTest extends FunSuite {
   }
 
   def failingDataSource[F[_]](key: String)(implicit F: ApplicativeError[F, NonEmptyChain[String]]) =
-    DataSource.from(FailingKey(key)) { _ =>
+    DataSource.from_(FailingKey(key)) { _ =>
       F.raiseError[Map[String, String]](NonEmptyChain.one("error"))
     }
 
@@ -311,7 +311,7 @@ class HxlEvaluationTest extends FunSuite {
   case class VarKey(str: String) extends DSKey[String, String]
   test("alignment") {
     val m = TrieMap.empty[String, Int]
-    def ds(s: String) = DataSource.from(VarKey(s)) { ks =>
+    def ds(s: String) = DataSource.from_(VarKey(s)) { ks =>
       m.updateWith(s) {
         case None    => Some(1)
         case Some(i) => Some(i + 1)
@@ -351,7 +351,7 @@ class HxlEvaluationTest extends FunSuite {
 
   test("Hxl.sequence preserves bind alignment across optional branches") {
     val m = TrieMap.empty[String, Int]
-    def ds(s: String) = DataSource.from(VarKey(s)) { ks =>
+    def ds(s: String) = DataSource.from_(VarKey(s)) { ks =>
       m.updateWith(s) {
         case None    => Some(1)
         case Some(i) => Some(i + 1)
