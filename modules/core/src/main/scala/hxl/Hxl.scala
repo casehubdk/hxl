@@ -251,10 +251,11 @@ object Hxl {
   def parSequence[F[_]: Parallel, A](xs: IterableOnce[Hxl[F, A]]): Hxl[F, ArraySeq[A]] =
     parTraverse(xs)(identity)
 
-  def parTraverse[F[_]: Parallel, A, B](xs: IterableOnce[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] = {
-    val par = Parallel[F]
-    traverse(xs)(a => f(a).mapK(par.parallel)(par.applicative))(par.applicative)
-      .mapK(par.sequential)(par.monad)
+  def parTraverse[F[_], A, B](xs: IterableOnce[A])(f: A => Hxl[F, B])(implicit par: Parallel[F]): Hxl[F, ArraySeq[B]] = {
+    implicit val ap: Applicative[par.F] = par.applicative
+    implicit val monad: Monad[F] = par.monad
+    traverse(xs)(a => f(a).mapK(par.parallel))
+      .mapK(par.sequential)
   }
 
   implicit def applicativeForHxl[F[_]: Applicative]: Applicative[Hxl[F, *]] =
