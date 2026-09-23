@@ -28,18 +28,18 @@ package object `natchez` {
   object HxlT {
     def parSubtrace[F[_]: Monad: Parallel: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] =
       subtraceWith(name)(fa) { keys =>
-        TracedRunner.runPar(Hxl.parTraverse(keys)(k => k.fa.map(a => (k, a))))
+        TracedRunner.runPar(Hxl.parTraverse(keys)(k => Hxl.explicitErrs(k.fa).map(a => (k, a))))
       }
 
     def subtrace[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] =
       subtraceWith(name)(fa) { keys =>
-        TracedRunner.runSequential(Hxl.traverse(keys)(k => k.fa.map(a => (k, a))))
+        TracedRunner.runSequential(Hxl.traverse(keys)(k => Hxl.explicitErrs(k.fa).map(a => (k, a))))
       }
 
     private def subtraceWith[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A])(
-        runBatch: ArraySeq[HxlSpanKey[F, A]] => F[ArraySeq[(HxlSpanKey[F, A], A)]]
+        runBatch: ArraySeq[HxlSpanKey[F, A]] => F[ArraySeq[(HxlSpanKey[F, A], Either[NonEmptyChain[Raised[?]], A])]]
     ): Hxl[F, A] = {
-      val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
+      val ds = DataSource.from[F, HxlSpanKey[F, A], Either[NonEmptyChain[Raised[?]], A]](HxlSpanDSKey[F, A](name)) { keys =>
         Trace[F].span(s"subbatch-hxl-$name") {
           runBatch(keys)
         }
@@ -47,7 +47,10 @@ package object `natchez` {
       Hxl(
         new HxlSpanKey(fa),
         ds
-      ).map(_.get)
+      ).map(_.get).andThen {
+        case Left(es) => Hxl.Errs[F, A](es)
+        case Right(a) => Hxl.pure[F, A](a)
+      }
     }
   }
 
@@ -64,7 +67,7 @@ package object `natchez` {
 
 object NatchezInternal {
   final class HxlSpanKey[F[_], A](val fa: Hxl[F, A])
-  final case class HxlSpanDSKey[F[_], A](name: String) extends DSKey[HxlSpanKey[F, A], A]
+  final case class HxlSpanDSKey[F[_], A](name: String) extends DSKey[HxlSpanKey[F, A], Either[NonEmptyChain[Raised[?]], A]]
 
   def traceRequests[F[_]: Trace: Applicative, A](req: Requests[F, A]): Requests[F, A] = {
     def traceSource[K, V](source: DataSource[F, K, V]): DataSource[F, K, V] =

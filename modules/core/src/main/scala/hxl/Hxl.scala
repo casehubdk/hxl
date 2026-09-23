@@ -114,6 +114,27 @@ object Hxl {
     def raise[A](e: E): Hxl[F, A]
   }
 
+  def explicitErrs[F[_]: Applicative, A](fa: Hxl[F, A]): Hxl[F, Either[NonEmptyChain[Raised[?]], A]] = {
+    def rec[B](node: Hxl[F, B]): Eval[Hxl[F, Either[NonEmptyChain[Raised[?]], B]]] =
+      node match {
+        case Errs(raiseds)  => Eval.now(Done(Left(raiseds)))
+        case Done(a)        => Eval.now(Done(Right(a)))
+        case LiftF(unFetch) => Eval.now(LiftF(unFetch.map(h => rec(h).value)))
+        case andThen: AndThen[F, a, B] =>
+          Eval.defer(rec(andThen.unsafeFa)).map { left =>
+            val safeLeft =
+              if (andThen.unsafeFa.depth > StackSafeDepth) LiftF(Applicative[F].pure(left))
+              else left
+            safeLeft.andThen {
+              case Left(es) => Done(Left(es))
+              case Right(a) => rec(andThen.fb(a)).value
+            }
+          }
+        case run: Run[F, B] => Eval.now(Run(run.requests.map(Right(_))))
+      }
+    rec(fa).value
+  }
+
   def channel[F[_]: Applicative, E, A](over: Raise[F, E] => Hxl[F, A])(implicit sg: Semigroup[E]): Hxl[F, Either[E, A]] = {
     val tag = new ErrorTag[E] {}
     val exec = over(new Raise[F, E] {

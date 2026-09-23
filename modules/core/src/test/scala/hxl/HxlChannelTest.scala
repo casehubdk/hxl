@@ -133,4 +133,109 @@ class HxlChannelTest extends FunSuite {
 
     assertEquals(Hxl.runSequential(program).value, Left(errors("boom")))
   }
+
+  test("explicitErrs preserves mixed error tags and skips failed continuations") {
+    val first = Hxl.Raised(new Hxl.ErrorTag[String] {}, "first")
+    val second = Hxl.Raised(new Hxl.ErrorTag[Int] {}, 2)
+    val raised: NonEmptyChain[Hxl.Raised[?]] = NonEmptyChain(first, second)
+    val program = Hxl.Errs[Id, Int](raised).andThen[Int](_ => fail("continuation must not run"))
+
+    assertEquals(Hxl.runSequential(Hxl.explicitErrs(program)), Left(raised))
+    assertEquals(Hxl.runSequential(Hxl.explicitErrs(Hxl.pure[Id, Int](1))), Right(1))
+  }
+
+  test("explicitErrs constructs deep strict-effect chains without running continuations") {
+    var evaluated = 0
+    val program = (0 until 10000).foldLeft(Hxl.pure[Id, Int](0)) { (acc, _) =>
+      acc.andThen { i =>
+        evaluated += 1
+        Hxl.pure[Id, Int](i + 1)
+      }
+    }
+    val captured = Hxl.explicitErrs(program)
+    assertEquals(evaluated, 0)
+    assertEquals(Hxl.runSequential(captured), Right(10000))
+    assertEquals(evaluated, 10000)
+  }
+
+  test("explicitErrs handles errors in deep strict-effect chains") {
+    val raised: NonEmptyChain[Hxl.Raised[?]] = NonEmptyChain.one(Hxl.Raised(new Hxl.ErrorTag[String] {}, "boom"))
+    val program = (0 until 10000)
+      .foldLeft(Hxl.pure[Id, Int](0))((acc, _) => acc.andThen(i => Hxl.pure[Id, Int](i + 1)))
+      .andThen(_ => Hxl.Errs[Id, Int](raised))
+      .andThen[Int](_ => fail("continuation must not run"))
+    assertEquals(Hxl.runSequential(Hxl.explicitErrs(program)), Left(raised))
+  }
+
+  test("explicitErrs captures deferred errors through deep bind chains") {
+    val raised: NonEmptyChain[Hxl.Raised[?]] = NonEmptyChain.one(Hxl.Raised(new Hxl.ErrorTag[String] {}, "boom"))
+    var evaluated = false
+    val program = Hxl.embedF(Eval.later {
+      evaluated = true
+      (0 until 10000)
+        .foldLeft(Hxl.pure[Eval, Int](0))((acc, _) => acc.andThen(i => Hxl.pure[Eval, Int](i + 1)))
+        .andThen(_ => Hxl.Errs[Eval, Int](raised))
+    })
+    val captured = Hxl.explicitErrs(program)
+
+    assert(!evaluated)
+    assertEquals(Hxl.runSequential(captured).value, Left(raised))
+    assert(evaluated)
+  }
+
+  test("explicitErrs preserves request batching and per-request outcomes") {
+    val raised: NonEmptyChain[Hxl.Raised[?]] = NonEmptyChain.one(Hxl.Raised(new Hxl.ErrorTag[String] {}, "odd"))
+    val program = Hxl.traverse(List(1, 2)) { key =>
+      Hxl.explicitErrs(Hxl(key, loggingDataSource).andThen { value =>
+        if (key % 2 == 0) Hxl.pure[Effect, Option[String]](value)
+        else Hxl.Errs[Effect, Option[String]](raised)
+      })
+    }
+    val (log, result) = Hxl.runSequential(program).run(Vector.empty)
+
+    assertEquals(log, Vector(Set(1, 2)))
+    assertEquals(result.toList, List(Left(raised), Right(Some("value-2"))))
+  }
+
+  test("explicitErrs respects inner channels and allows re-emission to outer channels") {
+    val inner = Hxl.channel[Id, Errors, Int] { raise =>
+      Hxl.pure[Id, Unit](()).andThen(_ => raise.raise[Int](errors("inner")))
+    }
+    assertEquals(Hxl.runSequential(Hxl.explicitErrs(inner)), Right(Left(errors("inner"))))
+
+    val outer = Hxl.channel[Id, Errors, Int] { raise =>
+      val captured = Hxl.runSequential(Hxl.explicitErrs(raise.raise[Int](errors("outer"))))
+      Hxl.pure[Id, Unit](()).andThen { _ =>
+        captured match {
+          case Left(es) => Hxl.Errs[Id, Int](es)
+          case Right(a) => Hxl.pure[Id, Int](a)
+        }
+      }
+    }
+    assertEquals(Hxl.runSequential(outer), Left(errors("outer")))
+  }
+
+  test("explicitErrs preserves channel batching across deep merged branches") {
+    for ((leftDepth, rightDepth) <- List((31, 32), (32, 33), (33, 34), (64, 33), (65, 66), (100, 64))) {
+      val left = (0 until leftDepth).foldLeft(Hxl(0, loggingDataSource)) { (acc, key) =>
+        acc.andThen(_ => Hxl(key + 1, loggingDataSource))
+      }
+      val right = (0 until rightDepth).foldLeft(Hxl(1000, loggingDataSource)) { (acc, key) =>
+        acc.andThen(_ => Hxl(key + 1001, loggingDataSource))
+      }
+      val captured = (Hxl.explicitErrs(left), Hxl.explicitErrs(right)).tupled
+      val handled = (
+        Hxl.channel[Effect, Errors, Option[String]](_ => left),
+        Hxl.channel[Effect, Errors, Option[String]](_ => right)
+      ).tupled
+
+      val (capturedLog, capturedResult) = Hxl.runSequential(captured).run(Vector.empty)
+      val (handledLog, handledResult) = Hxl.runSequential(handled).run(Vector.empty)
+      assertEquals(capturedLog, handledLog)
+      assertEquals(
+        (capturedResult._1.toOption, capturedResult._2.toOption),
+        (handledResult._1.toOption, handledResult._2.toOption)
+      )
+    }
+  }
 }

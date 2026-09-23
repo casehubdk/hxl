@@ -57,6 +57,60 @@ class TracingTest extends CatsEffectSuite {
     assertEquals(result, (List(1, 2), (1, 2)))
   }
 
+  for (parallel <- List(false, true)) {
+    val method = if (parallel) "parSubtrace" else "subtrace"
+
+    test(s"$method preserves independent error scopes within one batch") {
+      implicit val trace: _root_.natchez.Trace[IO] = _root_.natchez.noop.NoopTrace[IO]()
+      for {
+        batches <- Ref.of[IO, Vector[Set[Int]]](Vector.empty)
+        source = DataSource.from_[IO, Int, Int](DSKey[Int, Int]) { keys =>
+          batches.update(_ :+ keys.toSet).as(keys.iterator.map(key => key -> key).toMap)
+        }
+        program = Hxl.traverse(List(1, 2, 3)) { key =>
+          Hxl.channel[IO, NonEmptyChain[String], Int] { raise =>
+            val fa = Hxl.unsafeGet(key, source).andThen { value =>
+              if (value < 3) raise.raise[Int](NonEmptyChain.one(s"error-$value"))
+              else Hxl.pure[IO, Int](value)
+            }
+            if (parallel) HxlT.parSubtrace("scope")(fa) else HxlT.subtrace("scope")(fa)
+          }
+        }
+        result <- TracedRunner.runPar(program)
+        seen <- batches.get
+      } yield {
+        assertEquals(seen, Vector(Set(1, 2, 3)))
+        assertEquals(result.toList, List(Left(NonEmptyChain.one("error-1")), Left(NonEmptyChain.one("error-2")), Right(3)))
+      }
+    }
+
+    test(s"$method returns deferred errors to a shared outer channel") {
+      implicit val trace: _root_.natchez.Trace[IO] = _root_.natchez.noop.NoopTrace[IO]()
+      val program = Hxl.channel[IO, NonEmptyChain[String], List[Int]] { raise =>
+        Hxl
+          .traverse(List("first", "second")) { error =>
+            val fa = Hxl.liftF(IO.unit).andThen(_ => raise.raise[Int](NonEmptyChain.one(error)))
+            if (parallel) HxlT.parSubtrace("scope")(fa) else HxlT.subtrace("scope")(fa)
+          }
+          .map(_.toList)
+      }
+
+      TracedRunner.runPar(program).map(result => assertEquals(result, Left(NonEmptyChain("first", "second"))))
+    }
+
+    test(s"$method preserves inner channel precedence") {
+      implicit val trace: _root_.natchez.Trace[IO] = _root_.natchez.noop.NoopTrace[IO]()
+      val program = Hxl.channel[IO, NonEmptyChain[String], Either[NonEmptyChain[String], Int]] { _ =>
+        val fa = Hxl.channel[IO, NonEmptyChain[String], Int] { inner =>
+          Hxl.liftF(IO.unit).andThen(_ => inner.raise[Int](NonEmptyChain.one("inner")))
+        }
+        if (parallel) HxlT.parSubtrace("scope")(fa) else HxlT.subtrace("scope")(fa)
+      }
+
+      TracedRunner.runPar(program).map(result => assertEquals(result, Right(Left(NonEmptyChain.one("inner")))))
+    }
+  }
+
   test("should trace requests and add rounds") {
     type Effect[A] = Kleisli[IO, Span[IO], A]
     val fa = Hxl("foo", simpleDataSource[Effect])
