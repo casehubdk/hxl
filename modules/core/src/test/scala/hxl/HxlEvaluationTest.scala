@@ -123,7 +123,8 @@ class HxlEvaluationTest extends FunSuite {
 
   test("Hxl.sequence matches cats sequence") {
     val xs = List("foo", "bar", "foo").map(Hxl(_, simpleDataSource[Id]))
-    assertEquals(Hxl.runSequential(Hxl.sequence(xs.toArray)).toList, Hxl.runSequential(xs.sequence))
+    assertEquals(Hxl.runSequential(Hxl.sequence(xs)).toList, Hxl.runSequential(xs.sequence))
+    assertEquals(Hxl.runSequential(Hxl.sequence(xs.iterator)).toList, Hxl.runSequential(xs.sequence))
   }
 
   test("Hxl.sequence batches runs and preserves done slots") {
@@ -133,6 +134,14 @@ class HxlEvaluationTest extends FunSuite {
     val result = Hxl.runSequential(Hxl.sequence(Array(fa, done, fa)))
     val (state, values) = result.run(0)
     assertEquals((state, values.toList), (1, List(Some("foo"), Some("done"), Some("foo"))))
+  }
+
+  test("Hxl.parSequence accumulates errors from lifted effects") {
+    type Effect[A] = Either[NonEmptyChain[String], A]
+    val nodes = List("a", "b").map { error =>
+      Hxl.liftF[Effect, Int](Left(NonEmptyChain.one(error)))
+    }
+    assertEquals(Hxl.runSequential(Hxl.parSequence(nodes.iterator)), Left(NonEmptyChain("a", "b")))
   }
 
   test("Hxl.sequence preserves liftF round scheduling") {
@@ -148,13 +157,13 @@ class HxlEvaluationTest extends FunSuite {
     assertEquals(Hxl.runSequential(Hxl.sequence(Array(left, right))).toList, List("2", "ab"))
   }
 
-  test("Hxl.traverse handles empty and singleton arrays") {
+  test("Hxl.traverse handles empty and singleton iterators") {
     var ran = false
-    val empty = Hxl.traverse(Array.empty[Int]) { i =>
+    val empty = Hxl.traverse(Iterator.empty[Int]) { i =>
       ran = true
       Hxl.pure[Id, Int](i)
     }
-    val single = Hxl.traverse(Array(1))(i => Hxl.pure[Id, Int](i + 1))
+    val single = Hxl.traverse(Iterator.single(1))(i => Hxl.pure[Id, Int](i + 1))
 
     assertEquals(Hxl.runSequential(empty).toList, Nil)
     assert(!ran)
@@ -164,6 +173,17 @@ class HxlEvaluationTest extends FunSuite {
   test("Hxl.traverse preserves array order") {
     val result = Hxl.runSequential(Hxl.traverse(Array("c", "a", "b"))(Hxl(_, simpleDataSource[Id])))
     assertEquals(result.toList, List(Some("c"), Some("a"), Some("b")))
+  }
+
+  test("Hxl.traverse consumes an unknown-size iterator once") {
+    var seen = List.empty[String]
+    val result = Hxl.traverse(List("c", "a", "b").iterator.filter(_ != "a")) { key =>
+      seen = seen :+ key
+      Hxl(key, simpleDataSource[Id])
+    }
+    assertEquals(Hxl.runSequential(result).toList, List(Some("c"), Some("b")))
+    assertEquals(Hxl.runSequential(result).toList, List(Some("c"), Some("b")))
+    assertEquals(seen, List("c", "b"))
   }
 
   test("Applicative.ap composes andThen with run directly") {
@@ -192,7 +212,7 @@ class HxlEvaluationTest extends FunSuite {
       Hxl.pure[Id, Int](i).andThen(i => Hxl.pure[Id, Int](i + 1))
 
     val result = Hxl.runSequential(values.traverse(node))
-    val fastResult = Hxl.runSequential(Hxl.traverse(values.toArray)(node))
+    val fastResult = Hxl.runSequential(Hxl.traverse(values)(node))
     assertEquals(result.headOption, Some(1))
     assertEquals(result.lastOption, Some(10000))
     assertEquals(fastResult.headOption, Some(1))
@@ -243,7 +263,7 @@ class HxlEvaluationTest extends FunSuite {
   test("benchmark nondiscards") {
     val rng = (0 until 1000).toList
     def s = rng.traverse(_ => Hxl("foo", simpleDataSource[Id]).void)
-    def fast = Hxl.traverse(rng.toArray)(_ => Hxl("foo", simpleDataSource[Id]).void)
+    def fast = Hxl.traverse(rng)(_ => Hxl("foo", simpleDataSource[Id]).void)
     // warmup
     (0 until 100).foreach { _ =>
       Hxl.runSequential(s)
@@ -262,7 +282,7 @@ class HxlEvaluationTest extends FunSuite {
     val rng = (0 until 1000).toList
     def node = Hxl.pure[Id, Unit](()).andThen(_ => Hxl("foo", simpleDataSource[Id]).void)
     def s = rng.traverse(_ => node)
-    def fast = Hxl.traverse(rng.toArray)(_ => node)
+    def fast = Hxl.traverse(rng)(_ => node)
     // warmup
     (0 until 100).foreach { _ =>
       Hxl.runSequential(s)

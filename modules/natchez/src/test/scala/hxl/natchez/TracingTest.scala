@@ -24,11 +24,37 @@ import cats.implicits._
 import hxl.natchez.TracedRunner
 import hxl._
 import munit.CatsEffectSuite
+import scala.concurrent.duration._
 
 class TracingTest extends CatsEffectSuite {
   case object SimpleKey extends DSKey[String, String]
   def simpleDataSource[F[_]](implicit F: Applicative[F]) = DataSource.from_(SimpleKey) { ks =>
     F.pure(ks.toList.map(s => s -> s).toMap)
+  }
+
+  test("parSubtrace preserves parallel lifted effects and result order") {
+    implicit val trace: _root_.natchez.Trace[IO] = _root_.natchez.noop.NoopTrace[IO]()
+    for {
+      leftStarted <- Deferred[IO, Unit]
+      rightStarted <- Deferred[IO, Unit]
+      left = HxlT.parSubtrace("parallel")(
+        Hxl.liftF(leftStarted.complete(()) *> rightStarted.get.as(1))
+      )
+      right = HxlT.parSubtrace("parallel")(
+        Hxl.liftF(rightStarted.complete(()) *> leftStarted.get.as(2))
+      )
+      result <- TracedRunner.runPar((left, right).tupled).timeout(5.seconds)
+    } yield assertEquals(result, (1, 2))
+  }
+
+  test("subtrace preserves sequential state and result order") {
+    type Effect[A] = State[List[Int], A]
+    implicit val trace: _root_.natchez.Trace[Effect] = _root_.natchez.noop.NoopTrace[Effect]()
+    val left = HxlT.subtrace("sequential")(Hxl.liftF[Effect, Int](State.modify[List[Int]](_ :+ 1).as(1)))
+    val right = HxlT.subtrace("sequential")(Hxl.liftF[Effect, Int](State.modify[List[Int]](_ :+ 2).as(2)))
+
+    val result = TracedRunner.runSequential((left, right).tupled).run(Nil).value
+    assertEquals(result, (List(1, 2), (1, 2)))
   }
 
   test("should trace requests and add rounds") {

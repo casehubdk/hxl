@@ -242,11 +242,20 @@ object Hxl {
     }
   }
 
-  def sequence[F[_]: Applicative, A](xs: Array[Hxl[F, A]]): Hxl[F, ArraySeq[A]] =
+  def sequence[F[_]: Applicative, A](xs: IterableOnce[Hxl[F, A]]): Hxl[F, ArraySeq[A]] =
     HxlOpt.sequence(xs)
 
-  def traverse[F[_]: Applicative, A, B](xs: Array[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] =
+  def traverse[F[_]: Applicative, A, B](xs: IterableOnce[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] =
     HxlOpt.traverse(xs)(f)
+
+  def parSequence[F[_]: Parallel, A](xs: IterableOnce[Hxl[F, A]]): Hxl[F, ArraySeq[A]] =
+    parTraverse(xs)(identity)
+
+  def parTraverse[F[_]: Parallel, A, B](xs: IterableOnce[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] = {
+    val par = Parallel[F]
+    traverse(xs)(a => f(a).mapK(par.parallel)(par.applicative))(par.applicative)
+      .mapK(par.sequential)(par.monad)
+  }
 
   implicit def applicativeForHxl[F[_]: Applicative]: Applicative[Hxl[F, *]] =
     applicativeInstance[F, F](FunctionK.id[F], FunctionK.id[F])

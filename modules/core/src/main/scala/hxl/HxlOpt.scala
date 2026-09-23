@@ -234,23 +234,11 @@ private[hxl] object HxlOpt {
       case _ => Hxl.fmap(sequenceArray(nodes))(resultArraySeq[A])
     }
 
-  def sequence[F[_]: Applicative, A](xs: Array[Hxl[F, A]]): Hxl[F, ArraySeq[A]] = {
-    val nodes = new Array[Hxl[F, Any]](xs.length)
-    var i = 0
-    while (i < nodes.length) {
-      nodes(i) = xs(i).asInstanceOf[Hxl[F, Any]]
-      i += 1
-    }
-    sequenceNodes(nodes)
-  }
+  def sequence[F[_]: Applicative, A](xs: IterableOnce[Hxl[F, A]]): Hxl[F, ArraySeq[A]] =
+    traverse(xs)(identity)
 
-  def traverse[F[_]: Applicative, A, B](xs: Array[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] = {
-    val nodes = new Array[Hxl[F, Any]](xs.length)
-    var i = 0
-    while (i < nodes.length) {
-      nodes(i) = f(xs(i)).asInstanceOf[Hxl[F, Any]]
-      i += 1
-    }
+  def traverse[F[_]: Applicative, A, B](xs: IterableOnce[A])(f: A => Hxl[F, B]): Hxl[F, ArraySeq[B]] = {
+    val nodes = xs.iterator.map(a => f(a).asInstanceOf[Hxl[F, Any]]).toArray
     sequenceNodes(nodes)
   }
 }

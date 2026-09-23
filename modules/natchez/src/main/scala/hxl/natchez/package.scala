@@ -21,27 +21,33 @@ import cats.data._
 import cats.implicits._
 import cats._
 import Hxl._
+import scala.collection.immutable.ArraySeq
 
 package object `natchez` {
   import NatchezInternal._
   object HxlT {
-    def parSubtrace[F[_]: Monad: Parallel: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
+    def parSubtrace[F[_]: Monad: Parallel: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] =
+      subtraceWith(name)(fa) { keys =>
+        TracedRunner.runPar(Hxl.parTraverse(keys)(k => k.fa.map(a => (k, a))))
+      }
+
+    def subtrace[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] =
+      subtraceWith(name)(fa) { keys =>
+        TracedRunner.runSequential(Hxl.traverse(keys)(k => k.fa.map(a => (k, a))))
+      }
+
+    private def subtraceWith[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A])(
+        runBatch: ArraySeq[HxlSpanKey[F, A]] => F[ArraySeq[(HxlSpanKey[F, A], A)]]
+    ): Hxl[F, A] = {
       val ds = DataSource.from[F, HxlSpanKey[F, A], A](HxlSpanDSKey[F, A](name)) { keys =>
-        // .traverse will use monad's applicative to derive hxl applicative
-        implicit val par: Parallel[Hxl[F, *]] = hxl.instances.parallel.parallelForHxl[F]
-        val h = keys.toList.parTraverse(k => k.fa.map(a => (k, a)))
         Trace[F].span(s"subbatch-hxl-$name") {
-          TracedRunner.runPar(h)
+          runBatch(keys)
         }
       }
       Hxl(
         new HxlSpanKey(fa),
         ds
       ).map(_.get)
-    }
-    def subtrace[F[_]: Monad: Trace, A](name: String)(fa: Hxl[F, A]): Hxl[F, A] = {
-      implicit val P: Parallel[F] = Parallel.identity[F]
-      parSubtrace[F, A](name)(fa)
     }
   }
 
