@@ -17,6 +17,7 @@
 package hxl
 
 import cats._
+import cats.data.{Chain, NonEmptyChain}
 import cats.implicits._
 import scala.collection.immutable.ArraySeq
 import scala.collection.mutable
@@ -98,6 +99,9 @@ object DataSource {
   def full[F[_]: Functor, K, V](key: DSKey[K, V])(f: ArraySeq[K] => F[collection.Map[K, V]]) =
     full_(key)(ks => f(ArraySeq.untagged.from(ks)))
 
+  def fullNec[F[_]: Functor, K, V](key: DSKey[K, V])(f: NonEmptyChain[K] => F[collection.Map[K, V]]) =
+    full(key)(ks => f(NonEmptyChain.fromChainUnsafe(Chain.fromSeq(ks))))
+
   final class PartiallyAppliedIt_[F[_], K, V](key: DSKey[K, V]) {
     def apply[Container <: IterableOnce[(K, V)]](
         f: mutable.ArrayBuffer[K] => F[Container]
@@ -112,11 +116,21 @@ object DataSource {
       from_[F, K, V](key)(ks => f(ArraySeq.untagged.from(ks)))
   }
 
+  final class PartiallyAppliedItNec[F[_], K, V](key: DSKey[K, V]) {
+    def apply[Container <: IterableOnce[(K, V)]](
+        f: NonEmptyChain[K] => F[Container]
+    )(implicit F: Functor[F]): DataSource[F, K, V] =
+      from[F, K, V](key)(ks => f(NonEmptyChain.fromChainUnsafe(Chain.fromSeq(ks))))
+  }
+
   def from_[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedIt_[F, K, V] =
     new PartiallyAppliedIt_(key)
 
   def from[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedIt[F, K, V] =
     new PartiallyAppliedIt(key)
+
+  def fromNec[F[_], K, V](key: DSKey[K, V]): PartiallyAppliedItNec[F, K, V] =
+    new PartiallyAppliedItNec(key)
 
   def assoc[F[_]: Functor, K: ClassTag, V](key: DSKey[K, V])(f: Array[K] => F[Array[V]]): DataSource[F, K, V] =
     fullResult(key) { ks =>
@@ -129,4 +143,7 @@ object DataSource {
 
   def void[F[_]: Functor, K](key: DSKey[K, Unit])(f: ArraySeq[K] => F[Unit]): DataSource[F, K, Unit] =
     void_(key)(ks => f(ArraySeq.untagged.from(ks)))
+
+  def voidNec[F[_]: Functor, K](key: DSKey[K, Unit])(f: NonEmptyChain[K] => F[Unit]): DataSource[F, K, Unit] =
+    void(key)(ks => f(NonEmptyChain.fromChainUnsafe(Chain.fromSeq(ks))))
 }
